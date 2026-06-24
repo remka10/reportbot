@@ -1,0 +1,34 @@
+version: '3.9'
+
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    volumes:
+      - reports_data:/app/reports
+      - ./app/templates:/app/templates:ro
+    ports:
+      - "8000:8000"
+
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: reportbot
+      POSTGRES_USER: ${DB_USER:-reportbot}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-reportbot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  reports_data:
