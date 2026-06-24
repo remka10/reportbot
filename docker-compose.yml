@@ -11,24 +11,53 @@ services:
     volumes:
       - reports_data:/app/reports
       - ./app/templates:/app/templates:ro
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
+    networks:
+      - reportbot_net
 
   db:
     image: postgres:15-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: reportbot
-      POSTGRES_USER: ${DB_USER:-reportbot}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-reportbot}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - reportbot_net
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      - bot
+    networks:
+      - reportbot_net
+
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
 
 volumes:
   postgres_data:
   reports_data:
+
+networks:
+  reportbot_net:
+    driver: bridge
