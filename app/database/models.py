@@ -2,22 +2,18 @@
 SQLAlchemy-модели ReportBot.
 Все модели — чистые ORM-декларации, без бизнес-методов.
 """
-
 import enum
 from datetime import datetime, date as date_type
 from typing import Optional
-
 from sqlalchemy import (
     BigInteger, Boolean, Date, DateTime, Enum, ForeignKey,
     Integer, String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
 from app.database.base import Base
 
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
-
 class UserRole(str, enum.Enum):
     admin     = "admin"
     moderator = "moderator"
@@ -43,13 +39,13 @@ class DialogRole(str, enum.Enum):
 DEPARTMENTS: dict[int, dict] = {
     1: {"name": "Департамент управления",          "hex": "C0392B"},
     2: {"name": "Департамент общественных связей", "hex": "2980B9"},
-    3: {"name": "Инженерный департамент",           "hex": "27AE60"},
-    4: {"name": "Департамент Икс",                  "hex": "8E44AD"},
-    5: {"name": "Научный департамент",              "hex": "D35400"},
-    6: {"name": "IT-департамент",                   "hex": "16A085"},
-    7: {"name": "Департамент дизайна",              "hex": "F39C12"},
-    8: {"name": "Проект 11",                        "hex": "7F8C8D"},
-    9: {"name": "Летово Джун",                      "hex": "1ABC9C"},
+    3: {"name": "Инженерный департамент",          "hex": "27AE60"},
+    4: {"name": "Департамент Икс",                 "hex": "8E44AD"},
+    5: {"name": "Научный департамент",             "hex": "D35400"},
+    6: {"name": "IT-департамент",                  "hex": "16A085"},
+    7: {"name": "Департамент дизайна",             "hex": "F39C12"},
+    8: {"name": "Проект 11",                       "hex": "7F8C8D"},
+    9: {"name": "Летово Джун",                     "hex": "1ABC9C"},
 }
 
 
@@ -62,31 +58,33 @@ def get_department_hex(department_id: int) -> str:
 
 
 # ─── Таблицы ──────────────────────────────────────────────────────────────────
-
 class User(Base):
     __tablename__ = "users"
 
-    id:          Mapped[int]            = mapped_column(BigInteger, primary_key=True)  # Telegram user_id
-    username:    Mapped[Optional[str]]  = mapped_column(String(64),  nullable=True)
-    full_name:   Mapped[str]            = mapped_column(String(256), nullable=False)
-    role:        Mapped[UserRole]       = mapped_column(Enum(UserRole), nullable=False)
-    is_active:   Mapped[bool]           = mapped_column(Boolean, default=True, nullable=False)
-    created_at:  Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now())
-    created_by:  Mapped[Optional[int]]  = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    id:          Mapped[int]           = mapped_column(BigInteger, primary_key=True)
+    username:    Mapped[Optional[str]] = mapped_column(String(64),  nullable=True)
+    full_name:   Mapped[str]           = mapped_column(String(256), nullable=False)
+    role:        Mapped[UserRole]      = mapped_column(Enum(UserRole), nullable=False)
+    is_active:   Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
+    created_at:  Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by:  Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
 
 
 class Shift(Base):
     __tablename__ = "shifts"
 
-    id:            Mapped[int]            = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name:          Mapped[str]            = mapped_column(String(128), nullable=False)
-    department_id: Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)  # 1-9 по DEPARTMENTS
-    start_date:    Mapped[Optional[date_type]] = mapped_column(Date, nullable=True)
-    end_date:      Mapped[Optional[date_type]] = mapped_column(Date, nullable=True)
-    is_active:     Mapped[bool]           = mapped_column(Boolean, default=True, nullable=False)
-    created_by:    Mapped[Optional[int]]  = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    id:            Mapped[int]           = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name:          Mapped[str]           = mapped_column(String(128), nullable=False)
+    # ИСПРАВЛЕНО: nullable=False — соответствует миграции 0001 (было nullable=True)
+    department_id: Mapped[int]           = mapped_column(Integer, nullable=False)
+    # ИСПРАВЛЕНО: nullable=False — соответствует миграции 0001 (было nullable=True)
+    start_date:    Mapped[date_type]     = mapped_column(Date, nullable=False)
+    # ИСПРАВЛЕНО: nullable=False — соответствует миграции 0001 (было nullable=True)
+    end_date:      Mapped[date_type]     = mapped_column(Date, nullable=False)
+    is_active:     Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
+    created_at:    Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by:    Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
 
-    # Computed helpers (не хранятся в БД)
     @property
     def department_name(self) -> str:
         return get_department_name(self.department_id or 0)
@@ -107,20 +105,20 @@ class TeacherShift(Base):
 class Student(Base):
     __tablename__ = "students"
 
-    id:        Mapped[int]           = mapped_column(Integer,    primary_key=True, autoincrement=True)
+    id:        Mapped[int]           = mapped_column(Integer,     primary_key=True, autoincrement=True)
     full_name: Mapped[str]           = mapped_column(String(256), nullable=False)
-    shift_id:  Mapped[int]           = mapped_column(Integer,    ForeignKey("shifts.id"), nullable=False)
-    position:  Mapped[Optional[int]] = mapped_column(Integer,    nullable=True)
+    shift_id:  Mapped[int]           = mapped_column(Integer,     ForeignKey("shifts.id"), nullable=False)
+    position:  Mapped[Optional[int]] = mapped_column(Integer,     nullable=True)
 
 
 class Question(Base):
     __tablename__ = "questions"
 
     id:              Mapped[int]           = mapped_column(Integer, primary_key=True, autoincrement=True)
-    block_number:    Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    block_number:    Mapped[Optional[int]] = mapped_column(Integer,     nullable=True)
     block_title:     Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
-    question_number: Mapped[int]           = mapped_column(Integer, nullable=False)
-    question_text:   Mapped[str]           = mapped_column(Text,    nullable=False)
+    question_number: Mapped[int]           = mapped_column(Integer,     nullable=False)
+    question_text:   Mapped[str]           = mapped_column(Text,        nullable=False)
     is_active:       Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
 
 
@@ -144,7 +142,7 @@ class Report(Base):
     __tablename__ = "reports"
 
     id:             Mapped[int]           = mapped_column(Integer,    primary_key=True, autoincrement=True)
-    teacher_id:     Mapped[int]           = mapped_column(BigInteger, ForeignKey("users.id"),     nullable=False)
+    teacher_id:     Mapped[int]           = mapped_column(BigInteger, ForeignKey("users.id"),    nullable=False)
     student_id:     Mapped[int]           = mapped_column(Integer,    ForeignKey("students.id"), nullable=False)
     shift_id:       Mapped[int]           = mapped_column(Integer,    ForeignKey("shifts.id"),   nullable=False)
     generated_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -158,8 +156,8 @@ class Report(Base):
 class RevisionHistory(Base):
     __tablename__ = "revision_history"
 
-    id:         Mapped[int]      = mapped_column(Integer,    primary_key=True, autoincrement=True)
-    report_id:  Mapped[int]      = mapped_column(Integer,    ForeignKey("reports.id"), nullable=False)
+    id:         Mapped[int]        = mapped_column(Integer,    primary_key=True, autoincrement=True)
+    report_id:  Mapped[int]        = mapped_column(Integer,    ForeignKey("reports.id"), nullable=False)
     role:       Mapped[DialogRole] = mapped_column(Enum(DialogRole), nullable=False)
-    content:    Mapped[str]      = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    content:    Mapped[str]        = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime]   = mapped_column(DateTime(timezone=True), server_default=func.now())

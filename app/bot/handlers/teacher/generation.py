@@ -1,10 +1,8 @@
 import logging
-
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.bot.keyboards.child_menu import report_review_keyboard, generate_report_keyboard
 from app.bot.keyboards.main_menu import after_finalize_menu, export_menu
 from app.bot.states.teacher_states import GenerationStates, QuestionStates
@@ -32,7 +30,6 @@ def _split_text(text: str, max_len: int = TG_MAX_TEXT) -> list[str]:
         if len(text) <= max_len:
             parts.append(text)
             break
-        # Ищем последний перенос строки в пределах лимита
         split_at = text.rfind("\n", 0, max_len)
         if split_at == -1:
             split_at = max_len
@@ -44,7 +41,6 @@ def _split_text(text: str, max_len: int = TG_MAX_TEXT) -> list[str]:
 # ---------------------------------------------------------------------------
 # Запуск генерации
 # ---------------------------------------------------------------------------
-
 @router.callback_query(F.data == "teacher:generate")
 async def cb_generate_report(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
@@ -53,24 +49,17 @@ async def cb_generate_report(
     student_id = data.get("student_id")
     shift_id = data.get("shift_id")
     student_name = data.get("student_name", "—")
-
     if not student_id or not shift_id:
         await cb.answer("Ошибка: не выбран ребёнок или смена.", show_alert=True)
         return
-
     await state.set_state(GenerationStates.generating)
-
-    # Уведомляем педагога
     status_msg = await cb.message.edit_text(
         f"⏳ <b>Генерирую отчёт для {student_name}...</b>\n\n"
         f"Это займёт 10–30 секунд."
     )
-
     try:
-        # Получаем данные для генерации
         answer_repo = AnswerRepository(session)
         shift_repo = ShiftRepository(session)
-
         qa_pairs = await answer_repo.get_qa_pairs_for_report(user.id, student_id)
         if not qa_pairs:
             await status_msg.edit_text(
@@ -79,27 +68,19 @@ async def cb_generate_report(
             )
             await state.set_state(QuestionStates.answering)
             return
-
         ts = await shift_repo.get_teacher_shift(user.id, shift_id)
         shift_context = ts.shift_context if ts else ""
-
-        # Генерация через Gemini
         llm = LLMService()
         report_text = await llm.generate_report(
             qa_pairs=qa_pairs,
             shift_context=shift_context,
             student_name=student_name,
         )
-
-        # Сохраняем отчёт в БД
         report_repo = ReportRepository(session)
-        # Удаляем старый незафинализированный если есть
         existing = await report_repo.get_by_student(user.id, student_id, shift_id)
         if existing and not existing.is_finalized:
-            # Обновляем текст
             await report_repo.update_text(existing.id, report_text)
             report_id = existing.id
-            # Очищаем историю правок
         else:
             new_report = await report_repo.create(
                 teacher_id=user.id,
@@ -108,32 +89,24 @@ async def cb_generate_report(
                 generated_text=report_text,
             )
             report_id = new_report.id
-
-        # Сохраняем первое сообщение в историю диалога
         await report_repo.add_revision_message(
             report_id=report_id,
             role=DialogRole.assistant,
             content=report_text,
         )
-
         await state.update_data(report_id=report_id)
         await state.set_state(GenerationStates.reviewing)
-
-        # Отправляем текст педагогу (с разбивкой если длинный)
         parts = _split_text(report_text)
         await status_msg.delete()
-
         for i, part in enumerate(parts):
             if i < len(parts) - 1:
                 await cb.message.answer(part)
             else:
-                # Последняя часть — с кнопками
                 await cb.message.answer(
                     part + "\n\n─────────────────\n"
                           "Отчёт готов. Сохранить или исправить?",
                     reply_markup=report_review_keyboard(),
                 )
-
     except Exception as e:
         logger.error(f"Report generation error: {e}", exc_info=True)
         await status_msg.edit_text(
@@ -146,7 +119,6 @@ async def cb_generate_report(
 # ---------------------------------------------------------------------------
 # Финализация отчёта
 # ---------------------------------------------------------------------------
-
 @router.callback_query(GenerationStates.reviewing, F.data == "report:finalize")
 async def cb_finalize_report(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
@@ -155,26 +127,18 @@ async def cb_finalize_report(
     report_id = data.get("report_id")
     student_id = data.get("student_id")
     shift_id = data.get("shift_id")
-
     if not report_id:
         await cb.answer("Ошибка: отчёт не найден.", show_alert=True)
         return
-
     report_repo = ReportRepository(session)
     student_repo = StudentRepository(session)
-
-    # Финализируем без DOCX — файл генерируется в Этапе 5
     await report_repo.finalize(report_id)
-
-    # Считаем статистику
     finalized_ids = await report_repo.get_finalized_student_ids(user.id, shift_id)
     all_students = await student_repo.get_by_shift(shift_id)
     done = len(finalized_ids)
     total = len(all_students)
-
     data = await state.get_data()
     student_name = data.get("student_name", "—")
-
     await state.set_state(GenerationStates.finalized)
     await cb.message.edit_text(
         f"✅ <b>Отчёт для {student_name} сохранён!</b>\n\n"
@@ -186,7 +150,6 @@ async def cb_finalize_report(
 # ---------------------------------------------------------------------------
 # Запрос на правку
 # ---------------------------------------------------------------------------
-
 @router.callback_query(GenerationStates.reviewing, F.data == "report:revise")
 async def cb_request_revision(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(GenerationStates.waiting_revision)
@@ -200,7 +163,6 @@ async def cb_request_revision(cb: CallbackQuery, state: FSMContext) -> None:
 # ---------------------------------------------------------------------------
 # Получение текстовой правки
 # ---------------------------------------------------------------------------
-
 @router.message(GenerationStates.waiting_revision, F.text)
 async def revision_text(
     message: Message, state: FSMContext, user: User, session: AsyncSession
@@ -215,7 +177,6 @@ async def revision_text(
 # ---------------------------------------------------------------------------
 # Получение голосовой правки
 # ---------------------------------------------------------------------------
-
 @router.message(GenerationStates.waiting_revision, F.voice)
 async def revision_voice(
     message: Message, state: FSMContext, user: User, session: AsyncSession
@@ -238,7 +199,6 @@ async def revision_voice(
 # ---------------------------------------------------------------------------
 # Применение правки
 # ---------------------------------------------------------------------------
-
 async def _apply_revision(
     message: Message,
     state: FSMContext,
@@ -249,46 +209,31 @@ async def _apply_revision(
     data = await state.get_data()
     report_id = data.get("report_id")
     student_name = data.get("student_name", "—")
-
     if not report_id:
         await message.answer("⚠️ Ошибка: отчёт не найден.")
         return
-
     status_msg = await message.answer(f"⏳ Применяю правки для {student_name}...")
-
     report_repo = ReportRepository(session)
-
     try:
-        # Сохраняем запрос педагога в историю
         await report_repo.add_revision_message(
             report_id=report_id,
             role=DialogRole.user,
             content=revision_request,
         )
-
-        # Загружаем полную историю диалога
         history = list(await report_repo.get_revision_history(report_id))
-
-        # Генерируем исправленную версию
         llm = LLMService()
         revised_text = await llm.revise_report(
             revision_request=revision_request,
-            history=history[:-1],  # Без последнего user-сообщения (оно уже в запросе)
+            history=history[:-1],
         )
-
-        # Обновляем текст в БД
         await report_repo.update_text(report_id, revised_text)
-
-        # Сохраняем ответ LLM в историю
         await report_repo.add_revision_message(
             report_id=report_id,
             role=DialogRole.assistant,
             content=revised_text,
         )
-
         await state.set_state(GenerationStates.reviewing)
         await status_msg.delete()
-
         parts = _split_text(revised_text)
         for i, part in enumerate(parts):
             if i < len(parts) - 1:
@@ -299,7 +244,6 @@ async def _apply_revision(
                           "Исправленный отчёт. Сохранить или исправить ещё?",
                     reply_markup=report_review_keyboard(),
                 )
-
     except Exception as e:
         logger.error(f"Revision error: {e}", exc_info=True)
         await status_msg.edit_text(
@@ -312,26 +256,25 @@ async def _apply_revision(
 # ---------------------------------------------------------------------------
 # Следующий ребёнок
 # ---------------------------------------------------------------------------
-
 @router.callback_query(F.data == "teacher:next_child")
 async def cb_next_child(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    from app.bot.handlers.teacher.shift import _show_children_list
+    # ИСПРАВЛЕНО: было _show_children_list — такой функции не существует
+    from app.bot.handlers.teacher.shift import _show_children
     data = await state.get_data()
     shift_id = data.get("shift_id")
     if not shift_id:
         await cb.answer("Сначала выберите смену.", show_alert=True)
         return
-    # Сбрасываем данные по текущему ребёнку
     await state.update_data(student_id=None, student_name=None, report_id=None)
-    await _show_children_list(cb.message, state, user, session, shift_id, edit=True)
+    # ИСПРАВЛЕНО: передаём cb (CallbackQuery), а не cb.message
+    await _show_children(cb, user, session, state, shift_id)
 
 
 # ---------------------------------------------------------------------------
-# Экспорт (заглушка — реализуется в Этапе 5)
+# Экспорт
 # ---------------------------------------------------------------------------
-
 @router.callback_query(F.data == "teacher:export")
 async def cb_export_menu(cb: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()

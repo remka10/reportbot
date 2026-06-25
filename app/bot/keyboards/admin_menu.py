@@ -1,6 +1,5 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
 from app.database.models import Shift, User, UserRole, DEPARTMENTS
 
 
@@ -8,8 +7,8 @@ def admin_main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     """Главное меню администратора/модератора."""
     rows = [
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users")],
-        [InlineKeyboardButton(text="🏕 Смены", callback_data="admin:shifts")],
-        [InlineKeyboardButton(text="👦 Учащиеся", callback_data="admin:students")],
+        [InlineKeyboardButton(text="🏕 Смены",        callback_data="admin:shifts")],
+        [InlineKeyboardButton(text="👦 Учащиеся",     callback_data="admin:students")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -18,18 +17,14 @@ def users_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     """Меню управления пользователями."""
     rows = [
         [InlineKeyboardButton(text="➕ Добавить педагога", callback_data="admin:users:add")],
-        [InlineKeyboardButton(text="👁 Список педагогов", callback_data="admin:users:list")],
+        [InlineKeyboardButton(text="👁 Список педагогов",  callback_data="admin:users:list")],
     ]
     if is_admin:
         rows.append(
             [InlineKeyboardButton(text="🔄 Изменить роль", callback_data="admin:users:change_role")]
         )
-    rows.append(
-        [InlineKeyboardButton(text="🚫 Деактивировать", callback_data="admin:users:deactivate")]
-    )
-    rows.append(
-        [InlineKeyboardButton(text="← Назад", callback_data="admin:main")]
-    )
+    rows.append([InlineKeyboardButton(text="🚫 Деактивировать", callback_data="admin:users:deactivate")])
+    rows.append([InlineKeyboardButton(text="← Назад",           callback_data="admin:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -37,11 +32,11 @@ def shifts_menu() -> InlineKeyboardMarkup:
     """Меню управления сменами."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Создать смену", callback_data="admin:shifts:create")],
-            [InlineKeyboardButton(text="👁 Список смен", callback_data="admin:shifts:list")],
+            [InlineKeyboardButton(text="➕ Создать смену",       callback_data="admin:shifts:create")],
+            [InlineKeyboardButton(text="👁 Список смен",         callback_data="admin:shifts:list")],
             [InlineKeyboardButton(text="👨‍🏫 Привязать педагога", callback_data="admin:shifts:assign")],
-            [InlineKeyboardButton(text="🗑 Архивировать смену", callback_data="admin:shifts:archive")],
-            [InlineKeyboardButton(text="← Назад", callback_data="admin:main")],
+            [InlineKeyboardButton(text="🗑 Архивировать смену",  callback_data="admin:shifts:archive")],
+            [InlineKeyboardButton(text="← Назад",               callback_data="admin:main")],
         ]
     )
 
@@ -50,11 +45,11 @@ def students_menu() -> InlineKeyboardMarkup:
     """Меню управления учащимися."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Добавить учащегося", callback_data="admin:students:add")],
-            [InlineKeyboardButton(text="📋 Список учащихся", callback_data="admin:students:list")],
-            [InlineKeyboardButton(text="✏️ Редактировать имя", callback_data="admin:students:edit")],
-            [InlineKeyboardButton(text="🗑 Удалить учащегося", callback_data="admin:students:delete")],
-            [InlineKeyboardButton(text="← Назад", callback_data="admin:main")],
+            [InlineKeyboardButton(text="➕ Добавить учащегося",  callback_data="admin:students:add")],
+            [InlineKeyboardButton(text="📋 Список учащихся",     callback_data="admin:students:list")],
+            [InlineKeyboardButton(text="✏️ Редактировать имя",   callback_data="admin:students:edit")],
+            [InlineKeyboardButton(text="🗑 Удалить учащегося",   callback_data="admin:students:delete")],
+            [InlineKeyboardButton(text="← Назад",               callback_data="admin:main")],
         ]
     )
 
@@ -62,8 +57,9 @@ def students_menu() -> InlineKeyboardMarkup:
 def departments_keyboard() -> InlineKeyboardMarkup:
     """Список департаментов для выбора при создании смены."""
     builder = InlineKeyboardBuilder()
-    for dept_id, dept_name in DEPARTMENTS.items():
-        builder.button(text=dept_name, callback_data=f"dept:{dept_id}")
+    # ИСПРАВЛЕНО: DEPARTMENTS — dict[int, dict], итерируем .items() как (id, info_dict)
+    for dept_id, dept_info in DEPARTMENTS.items():
+        builder.button(text=dept_info["name"], callback_data=f"dept:{dept_id}")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -109,9 +105,9 @@ def roles_keyboard(exclude_role: UserRole | None = None) -> InlineKeyboardMarkup
         if role == exclude_role:
             continue
         labels = {
-            UserRole.admin: "👑 Администратор",
+            UserRole.admin:     "👑 Администратор",
             UserRole.moderator: "🛡 Модератор",
-            UserRole.teacher: "👨‍🏫 Педагог",
+            UserRole.teacher:   "👨‍🏫 Педагог",
         }
         builder.button(text=labels[role], callback_data=f"role:{role.value}")
     builder.adjust(1)
@@ -124,7 +120,7 @@ def confirm_keyboard(yes_data: str, no_data: str = "admin:cancel") -> InlineKeyb
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="✅ Да, подтвердить", callback_data=yes_data),
-                InlineKeyboardButton(text="❌ Отмена", callback_data=no_data),
+                InlineKeyboardButton(text="❌ Отмена",          callback_data=no_data),
             ]
         ]
     )
@@ -137,3 +133,9 @@ def back_keyboard(back_to: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="← Назад", callback_data=back_to)]
         ]
     )
+
+
+# ДОБАВЛЕНО: алиас, который импортирует admin/shifts.py
+def back_keyboard_admin(back_to: str) -> InlineKeyboardMarkup:
+    """Алиас back_keyboard для admin-хендлеров."""
+    return back_keyboard(back_to)
