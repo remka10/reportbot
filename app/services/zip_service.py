@@ -1,12 +1,20 @@
 import io
 import logging
+import re
 import zipfile
 from pathlib import Path
 
 from app.database.models import Report, Student, Shift, User
-from app.services.docx_service import DocxService, _safe_archive_name
+from app.services.docx_service import DocxService  # _safe_archive_name убран отсюда
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_archive_name(name: str) -> str:
+    """Убирает символы, недопустимые в именах файлов/архивов."""
+    name = re.sub(r'[\\/*?:"<>|]', "_", name)
+    name = name.strip(". ")
+    return (name or "archive") + ".zip"
 
 
 class ZipService:
@@ -24,7 +32,6 @@ class ZipService:
         Returns:
             (BytesIO буфер, имя архива)
         """
-        from datetime import date
         archive_name = _safe_archive_name(shift.name)
         buffer = io.BytesIO()
 
