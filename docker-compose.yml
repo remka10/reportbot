@@ -13,6 +13,13 @@ services:
       - ./app/templates:/app/templates:ro
     expose:
       - "8000"
+    # ДОБАВЛЕНО: healthcheck для бота
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - reportbot_net
 
@@ -43,8 +50,10 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./certbot/conf:/etc/letsencrypt:ro
       - ./certbot/www:/var/www/certbot:ro
+    # ИСПРАВЛЕНО: nginx ждёт health бота
     depends_on:
-      - bot
+      bot:
+        condition: service_healthy
     networks:
       - reportbot_net
 
