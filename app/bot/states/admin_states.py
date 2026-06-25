@@ -2,10 +2,10 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class AddUserStates(StatesGroup):
-    waiting_user_id  = State()
-    waiting_fullname = State()
-    waiting_role     = State()
-    confirm          = State()
+    waiting_user_id   = State()
+    waiting_full_name = State()   # roles.py использует waiting_full_name
+    waiting_role      = State()
+    confirm           = State()
 
 
 class ChangeRoleStates(StatesGroup):
@@ -24,7 +24,6 @@ class CreateShiftStates(StatesGroup):
     waiting_dates      = State()
 
 
-# ДОБАВЛЕНО: отсутствовал — shifts.py его импортировал и падал
 class ArchiveShiftStates(StatesGroup):
     waiting_shift_select = State()
     confirm              = State()
@@ -37,7 +36,7 @@ class AssignTeacherStates(StatesGroup):
 
 class AddStudentStates(StatesGroup):
     waiting_shift_select = State()
-    waiting_fullname     = State()
+    waiting_full_name    = State()   # students.py использует waiting_full_name
 
 
 class EditStudentStates(StatesGroup):
