@@ -2,39 +2,42 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class AddUserStates(StatesGroup):
-    waiting_user_id   = State()  # Ввод Telegram ID
-    waiting_full_name = State()  # Ввод имени
-    waiting_role      = State()  # Выбор роли (inline-кнопки)
-    confirm           = State()  # Подтверждение
+    waiting_user_id  = State()
+    waiting_fullname = State()
+    waiting_role     = State()
+    confirm          = State()
 
 
 class ChangeRoleStates(StatesGroup):
-    waiting_user_select = State()  # Выбор пользователя из списка
-    waiting_new_role    = State()  # Выбор новой роли
+    waiting_user_select = State()
+    waiting_new_role    = State()
 
 
 class DeactivateUserStates(StatesGroup):
-    waiting_user_select = State()  # Выбор пользователя
-    confirm             = State()  # Подтверждение
+    waiting_user_select = State()
+    confirm             = State()
 
 
 class CreateShiftStates(StatesGroup):
-    waiting_name          = State()  # Название смены
-    waiting_department    = State()  # Выбор департамента (1–8)
-    waiting_start_date    = State()  # Дата начала (ДД.ММ.ГГГГ)
-    waiting_end_date      = State()  # Дата окончания
-    confirm               = State()  # Подтверждение
+    waiting_name       = State()
+    waiting_department = State()
+    waiting_dates      = State()
+
+
+# ДОБАВЛЕНО: отсутствовал — shifts.py его импортировал и падал
+class ArchiveShiftStates(StatesGroup):
+    waiting_shift_select = State()
+    confirm              = State()
 
 
 class AssignTeacherStates(StatesGroup):
-    waiting_shift_select   = State()  # Выбор смены
-    waiting_teacher_select = State()  # Выбор педагога
+    waiting_shift_select   = State()
+    waiting_teacher_select = State()
 
 
 class AddStudentStates(StatesGroup):
-    waiting_shift_select = State()  # Выбор смены
-    waiting_full_name    = State()  # Имя учащегося (можно несколько через Enter)
-    confirm              = State()
+    waiting_shift_select = State()
+    waiting_fullname     = State()
 
 
 class EditStudentStates(StatesGroup):

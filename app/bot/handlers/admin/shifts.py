@@ -2,6 +2,9 @@
 Хендлер управления сменами (admin/moderator).
 """
 import logging
+import re
+from datetime import date
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -12,15 +15,22 @@ from app.bot.keyboards.admin_menu import back_keyboard_admin, shifts_menu
 from app.bot.states.admin_states import CreateShiftStates, ArchiveShiftStates
 from app.database.models import DEPARTMENTS, User
 from app.repositories.shift_repo import ShiftRepository
-from app.repositories.user_repo import UserRepository
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_shifts")
 
 
+def _departments_keyboard():
+    builder = InlineKeyboardBuilder()
+    for dep_id, info in DEPARTMENTS.items():
+        builder.button(text=info["name"], callback_data=f"dep_{dep_id}")
+    builder.button(text="← Назад", callback_data="admin:shifts")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 # ---------------------------------------------------------------------------
-# Вход в меню смен
-# ИСПРАВЛЕНО: добавлен хендлер — раньше кнопка "🏕 Смены" никуда не вела
+# Меню смен
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "admin:shifts")
 async def cb_shifts_menu(cb: CallbackQuery) -> None:
@@ -33,7 +43,6 @@ async def cb_shifts_menu(cb: CallbackQuery) -> None:
 
 # ---------------------------------------------------------------------------
 # Список смен
-# ИСПРАВЛЕНО: было F.data == "admin_shifts_list", клавиатура слала "admin:shifts:list"
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "admin:shifts:list")
 async def cb_shifts_list(cb: CallbackQuery, session: AsyncSession) -> None:
@@ -57,7 +66,6 @@ async def cb_shifts_list(cb: CallbackQuery, session: AsyncSession) -> None:
 
 # ---------------------------------------------------------------------------
 # Создание смены — шаг 1: название
-# ИСПРАВЛЕНО: было F.data == "admin_shifts_create"
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "admin:shifts:create")
 async def cb_create_shift_start(cb: CallbackQuery, state: FSMContext) -> None:
@@ -70,7 +78,7 @@ async def cb_create_shift_start(cb: CallbackQuery, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Создание смены — шаг 2: название введено, выбор департамента
+# Создание смены — шаг 2: выбор департамента
 # ---------------------------------------------------------------------------
 @router.message(CreateShiftStates.waiting_name)
 async def create_shift_name(message: Message, state: FSMContext) -> None:
@@ -80,26 +88,19 @@ async def create_shift_name(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(shift_name=name)
     await state.set_state(CreateShiftStates.waiting_department)
-    # ИСПРАВЛЕНО: используем "dept:" как в admin_menu.departments_keyboard
-    builder = InlineKeyboardBuilder()
-    for dep_id, info in DEPARTMENTS.items():
-        builder.button(text=info["name"], callback_data=f"dept:{dep_id}")
-    builder.button(text="← Назад", callback_data="admin:shifts")
-    builder.adjust(1)
     await message.answer(
         f"Выбери департамент для смены <b>{name}</b>:",
         parse_mode="HTML",
-        reply_markup=builder.as_markup(),
+        reply_markup=_departments_keyboard(),
     )
 
 
 # ---------------------------------------------------------------------------
-# Создание смены — шаг 3: департамент выбран, ввод дат
-# ИСПРАВЛЕНО: было F.data.startswith("dep_"), теперь "dept:"
+# Создание смены — шаг 3: ввод дат
 # ---------------------------------------------------------------------------
-@router.callback_query(CreateShiftStates.waiting_department, F.data.startswith("dept:"))
+@router.callback_query(CreateShiftStates.waiting_department, F.data.startswith("dep_"))
 async def create_shift_department(cb: CallbackQuery, state: FSMContext) -> None:
-    dep_id = int(cb.data.split(":")[1])   # ИСПРАВЛЕНО: split(":") вместо split("_")
+    dep_id = int(cb.data.split("_")[1])
     if dep_id not in DEPARTMENTS:
         await cb.answer("Неизвестный департамент.", show_alert=True)
         return
@@ -116,7 +117,7 @@ async def create_shift_department(cb: CallbackQuery, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Создание смены — шаг 4: даты введены, сохранение
+# Создание смены — шаг 4: сохранение
 # ---------------------------------------------------------------------------
 @router.message(CreateShiftStates.waiting_dates)
 async def create_shift_dates(
@@ -125,9 +126,6 @@ async def create_shift_dates(
     session: AsyncSession,
     user: User,
 ) -> None:
-    import re
-    from datetime import date
-
     text = (message.text or "").strip()
     match = re.match(r"(\d{2})\.(\d{2})\.(\d{4})-(\d{2})\.(\d{2})\.(\d{4})", text)
     if not match:
@@ -165,7 +163,6 @@ async def create_shift_dates(
 
 # ---------------------------------------------------------------------------
 # Привязать педагога к смене
-# ДОБАВЛЕНО: хендлер отсутствовал — кнопка в меню не работала
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "admin:shifts:assign")
 async def cb_assign_teacher_start(
@@ -175,16 +172,13 @@ async def cb_assign_teacher_start(
     shifts = list(await shift_repo.get_all_active())
     if not shifts:
         await cb.message.edit_text(
-            "Нет активных смен для привязки педагога.",
+            "Нет активных смен.",
             reply_markup=back_keyboard_admin("admin:shifts"),
         )
         return
     builder = InlineKeyboardBuilder()
-    for shift in shifts:
-        builder.button(
-            text=f"[{shift.id}] {shift.name}",
-            callback_data=f"assign_shift:{shift.id}",
-        )
+    for s in shifts:
+        builder.button(text=f"[{s.id}] {s.name}", callback_data=f"assign_shift:{s.id}")
     builder.button(text="← Назад", callback_data="admin:shifts")
     builder.adjust(1)
     await cb.message.edit_text(
@@ -197,6 +191,7 @@ async def cb_assign_teacher_start(
 async def cb_assign_shift_selected(
     cb: CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
+    from app.repositories.user_repo import UserRepository
     shift_id = int(cb.data.split(":")[1])
     user_repo = UserRepository(session)
     teachers = list(await user_repo.get_by_role_active("teacher"))
@@ -209,15 +204,11 @@ async def cb_assign_shift_selected(
     await state.update_data(assign_shift_id=shift_id)
     builder = InlineKeyboardBuilder()
     for t in teachers:
-        builder.button(
-            text=f"{t.full_name}",
-            callback_data=f"assign_teacher:{t.id}",
-        )
+        builder.button(text=t.full_name, callback_data=f"assign_teacher:{t.id}")
     builder.button(text="← Назад", callback_data="admin:shifts:assign")
     builder.adjust(1)
     await cb.message.edit_text(
-        "Выберите педагога для привязки к смене:",
-        reply_markup=builder.as_markup(),
+        "Выберите педагога:", reply_markup=builder.as_markup()
     )
 
 
@@ -242,26 +233,23 @@ async def cb_assign_teacher_confirm(
 
 # ---------------------------------------------------------------------------
 # Архивировать смену
-# ДОБАВЛЕНО: хендлер отсутствовал — кнопка в меню не работала
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "admin:shifts:archive")
 async def cb_archive_shift_start(
-    cb: CallbackQuery, session: AsyncSession
+    cb: CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
     shift_repo = ShiftRepository(session)
     shifts = list(await shift_repo.get_all_active())
     if not shifts:
         await cb.message.edit_text(
-            "Нет активных смен для архивирования.",
+            "Нет активных смен.",
             reply_markup=back_keyboard_admin("admin:shifts"),
         )
         return
+    await state.set_state(ArchiveShiftStates.waiting_shift_select)
     builder = InlineKeyboardBuilder()
-    for shift in shifts:
-        builder.button(
-            text=f"[{shift.id}] {shift.name}",
-            callback_data=f"archive_shift:{shift.id}",
-        )
+    for s in shifts:
+        builder.button(text=f"[{s.id}] {s.name}", callback_data=f"archive_shift:{s.id}")
     builder.button(text="← Назад", callback_data="admin:shifts")
     builder.adjust(1)
     await cb.message.edit_text(
@@ -270,20 +258,34 @@ async def cb_archive_shift_start(
     )
 
 
-@router.callback_query(F.data.startswith("archive_shift:"))
+@router.callback_query(
+    ArchiveShiftStates.waiting_shift_select, F.data.startswith("archive_shift:")
+)
+async def cb_archive_shift_selected(
+    cb: CallbackQuery, state: FSMContext
+) -> None:
+    shift_id = int(cb.data.split(":")[1])
+    await state.update_data(archive_shift_id=shift_id)
+    await state.set_state(ArchiveShiftStates.confirm)
+    from app.bot.keyboards.admin_menu import confirm_keyboard
+    await cb.message.edit_text(
+        f"Архивировать смену ID {shift_id}? Педагоги потеряют к ней доступ.",
+        reply_markup=confirm_keyboard(
+            yes_data=f"archive_confirm:{shift_id}",
+            no_data="admin:shifts",
+        ),
+    )
+
+
+@router.callback_query(
+    ArchiveShiftStates.confirm, F.data.startswith("archive_confirm:")
+)
 async def cb_archive_shift_confirm(
-    cb: CallbackQuery, session: AsyncSession
+    cb: CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
     shift_id = int(cb.data.split(":")[1])
     shift_repo = ShiftRepository(session)
     ok = await shift_repo.archive(shift_id)
-    if ok:
-        await cb.message.edit_text(
-            "✅ Смена архивирована.",
-            reply_markup=back_keyboard_admin("admin:shifts"),
-        )
-    else:
-        await cb.message.edit_text(
-            "❌ Смена не найдена.",
-            reply_markup=back_keyboard_admin("admin:shifts"),
-        )
+    await state.clear()
+    text = "✅ Смена архивирована." if ok else "❌ Смена не найдена."
+    await cb.message.edit_text(text, reply_markup=back_keyboard_admin("admin:shifts"))
