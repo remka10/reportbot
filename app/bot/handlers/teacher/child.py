@@ -40,9 +40,7 @@ async def cb_child_selected(
     report = await report_repo.get_by_student(user.id, student_id, data.get("shift_id"))
     if report and report.is_finalized:
         await cb.message.edit_text(
-            f"✅ Отчёт для <b>{student.full_name}</b> уже финализирован.
-
-"
+            f"✅ Отчёт для <b>{student.full_name}</b> уже финализирован."
             "Хотите пересмотреть или скачать?",
             reply_markup=generate_report_keyboard(),
         )
@@ -85,4 +83,4 @@ async def _go_to_question(
     total = len(questions)
     # Нормализуем номер
     question_num = max(1, min(question_num, total))
-    question = next((q for q in questions if q.question_number == question_num), questions[0]
+    question = next((q for q in questions if q.question_number == question_num), questions[0])
