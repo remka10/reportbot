@@ -15,17 +15,20 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # --- Enums ---
-    user_role = postgresql.ENUM(
-        "admin", "moderator", "teacher",
-        name="user_role", create_type=False
-    )
-    dialog_role = postgresql.ENUM(
-        "assistant", "user",
-        name="dialog_role", create_type=False
-    )
-    user_role.create(op.get_bind(), checkfirst=True)
-    dialog_role.create(op.get_bind(), checkfirst=True)
+    # --- Enums (checkfirst=True предотвращает DuplicateObjectError) ---
+    conn = op.get_bind()
+    conn.execute(sa.text("""
+        DO $$ BEGIN
+            CREATE TYPE user_role AS ENUM ('admin', 'moderator', 'teacher');
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+    """))
+    conn.execute(sa.text("""
+        DO $$ BEGIN
+            CREATE TYPE dialog_role AS ENUM ('assistant', 'user');
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+    """))
 
     # --- users ---
     op.create_table(
@@ -35,7 +38,7 @@ def upgrade() -> None:
         sa.Column("full_name", sa.String(256), nullable=False),
         sa.Column(
             "role",
-            sa.Enum("admin", "moderator", "teacher", name="user_role"),
+            sa.Enum("admin", "moderator", "teacher", name="user_role", create_type=False),
             nullable=False,
         ),
         sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.text("true")),
@@ -74,6 +77,7 @@ def upgrade() -> None:
             sa.ForeignKey("users.id", ondelete="SET NULL"),
             nullable=True,
         ),
+        sa.CheckConstraint("department_id BETWEEN 1 AND 9", name="shifts_department_id_check"),
     )
 
     # --- teacher_shifts ---
@@ -208,7 +212,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "role",
-            sa.Enum("assistant", "user", name="dialog_role"),
+            sa.Enum("assistant", "user", name="dialog_role", create_type=False),
             nullable=False,
         ),
         sa.Column("content", sa.Text, nullable=False),
