@@ -6,7 +6,7 @@ from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.database.base import Base
-import app.database.models  # noqa: F401 — регистрируем все модели
+import app.database.models  # noqa: F401
 
 config = context.config
 fileConfig(config.config_file_name)
@@ -15,7 +15,12 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    return os.environ["DATABASE_URL"]
+    # Приоритет: переменная окружения → settings
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        from app.config import get_settings
+        url = get_settings().database_url
+    return url
 
 
 def run_migrations_offline() -> None:

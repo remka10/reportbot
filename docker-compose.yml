@@ -1,31 +1,35 @@
-version: '3.9'
+version: "3.9"
 
 services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: reportbot
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d reportbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   bot:
     build: .
     restart: unless-stopped
-    network_mode: host
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+    env_file: .env
     depends_on:
       db:
-        condition: service_healthy
-    env_file: .env
+        condition: service_healthy     # ← ждём ГОТОВНОСТИ postgres, а не просто запуска
     volumes:
-      - reports_data:/app/reports
-      - ./app/templates:/app/templates:ro
-    expose:
-      - "8000"
-    # ДОБАВЛЕНО: healthcheck для бота
-    #healthcheck:
-     # test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      #interval: 10s
-      #timeout: 5s
-      #retries: 5
-      #start_period: 15s
-     #networks:
-    #- reportbot_net
+      - ./app/reports:/app/app/reports
+      - ./app/templates:/app/app/templates
+
+volumes:
+  pg_data:
 
   db:
     image: postgres:15-alpine
