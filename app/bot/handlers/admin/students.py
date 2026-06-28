@@ -1,3 +1,4 @@
+# app/bot/handlers/admin/students.py
 import logging
 
 from aiogram import F, Router
@@ -11,6 +12,7 @@ from app.bot.keyboards.admin_menu import (
 )
 from app.bot.states.admin_states import (
     AddStudentStates, EditStudentStates, DeleteStudentStates,
+    ViewStudentsStates,
 )
 from app.database.models import User, UserRole
 from app.repositories.shift_repo import ShiftRepository
@@ -52,7 +54,7 @@ async def add_student_shift_selected(cb: CallbackQuery, state: FSMContext) -> No
     await state.update_data(shift_id=shift_id)
     await state.set_state(AddStudentStates.waiting_full_name)
     await cb.message.edit_text(
-        "Введите <b>полное имя</b> учащегося (Фамилия Имя):"
+        "Введите <b>полное имя</b> учащегося (Фамилия Имя):\n"
         "<i>Чтобы добавить нескольких — отправляйте по одному сообщению.</i>",
         reply_markup=back_keyboard("admin:students"),
     )
@@ -69,8 +71,8 @@ async def add_student_name(message: Message, state: FSMContext, session: AsyncSe
     student = await repo.create(full_name=full_name, shift_id=data["shift_id"])
     count = await repo.count_by_shift(data["shift_id"])
     await message.answer(
-        f"✅ <b>{student.full_name}</b> добавлен (#{student.position})."
-        f"Всего в смене: {count} уч."
+        f"✅ <b>{student.full_name}</b> добавлен (#{student.position}).\n"
+        f"Всего в смене: {count} уч.\n"
         f"Введите следующее имя или нажмите /done чтобы завершить."
     )
 
@@ -85,9 +87,6 @@ async def add_student_done(message: Message, state: FSMContext) -> None:
 # Список учащихся
 # ---------------------------------------------------------------------------
 
-class ViewStudentsStates(StatesGroup):
-    waiting_shift_select = State()
-
 @router.callback_query(F.data == "admin:students:list")
 async def cb_students_list(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     shift_repo = ShiftRepository(session)
@@ -95,11 +94,12 @@ async def cb_students_list(cb: CallbackQuery, state: FSMContext, session: AsyncS
     if not shifts:
         await cb.message.edit_text("Нет активных смен.", reply_markup=back_keyboard("admin:students"))
         return
-    await state.set_state(ViewStudentsStates.waiting_shift_select)  # ← добавить состояние
+    await state.set_state(ViewStudentsStates.waiting_shift_select)
     await cb.message.edit_text(
         "Выберите смену для просмотра учащихся:",
         reply_markup=shifts_list_keyboard(shifts),
     )
+
 
 @router.callback_query(ViewStudentsStates.waiting_shift_select, F.data.startswith("select_shift:"))
 async def students_list_shift_selected(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
@@ -117,8 +117,10 @@ async def students_list_shift_selected(cb: CallbackQuery, state: FSMContext, ses
         return
     lines = [f"👦 <b>Учащиеся: {shift.name if shift else ''} ({len(students)})</b>"]
     for s in students:
-        lines.append(f"\n{s.position}. {s.full_name}")
-    await cb.message.edit_text("".join(lines), reply_markup=back_keyboard("admin:students"))
+        lines.append(f"{s.position}. {s.full_name}")
+    await cb.message.edit_text("\n".join(lines), reply_markup=back_keyboard("admin:students"))
+
+
 # ---------------------------------------------------------------------------
 # Редактировать имя
 # ---------------------------------------------------------------------------
@@ -146,7 +148,7 @@ async def edit_student_selected(cb: CallbackQuery, state: FSMContext, session: A
     await state.update_data(student_id=student_id)
     await state.set_state(EditStudentStates.waiting_new_name)
     await cb.message.edit_text(
-        f"Текущее имя: <b>{student.full_name if student else '—'}</b>Введите новое имя:"
+        f"Текущее имя: <b>{student.full_name if student else '—'}</b>\nВведите новое имя:"
     )
 
 
@@ -189,7 +191,7 @@ async def delete_student_selected(cb: CallbackQuery, state: FSMContext, session:
     await state.update_data(student_id=student_id)
     await state.set_state(DeleteStudentStates.confirm)
     await cb.message.edit_text(
-        f"Удалить <b>{student.full_name if student else '—'}</b>?"
+        f"Удалить <b>{student.full_name if student else '—'}</b>?\n"
         "⚠️ Все ответы и отчёты по этому учащемуся будут удалены.",
         reply_markup=confirm_keyboard(yes_data="admin:students:delete:confirm"),
     )

@@ -1,3 +1,4 @@
+# app/bot/handlers/admin/shifts.py
 """
 Хендлер управления сменами (admin/moderator).
 """
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.admin_menu import back_keyboard_admin, shifts_menu
 from app.bot.states.admin_states import CreateShiftStates, ArchiveShiftStates
-from app.database.models import DEPARTMENTS, User, UserRole  # ДОБАВЛЕНО: UserRole
+from app.database.models import DEPARTMENTS, User, UserRole
 from app.repositories.shift_repo import ShiftRepository
 
 logger = logging.getLogger(__name__)
@@ -29,9 +30,6 @@ def _departments_keyboard():
     return builder.as_markup()
 
 
-# ---------------------------------------------------------------------------
-# Меню смен
-# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "admin:shifts")
 async def cb_shifts_menu(cb: CallbackQuery) -> None:
     await cb.message.edit_text(
@@ -41,9 +39,6 @@ async def cb_shifts_menu(cb: CallbackQuery) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Список смен
-# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "admin:shifts:list")
 async def cb_shifts_list(cb: CallbackQuery, session: AsyncSession) -> None:
     shift_repo = ShiftRepository(session)
@@ -64,9 +59,6 @@ async def cb_shifts_list(cb: CallbackQuery, session: AsyncSession) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Создание смены — шаг 1: название
-# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "admin:shifts:create")
 async def cb_create_shift_start(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CreateShiftStates.waiting_name)
@@ -77,9 +69,6 @@ async def cb_create_shift_start(cb: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Создание смены — шаг 2: выбор департамента
-# ---------------------------------------------------------------------------
 @router.message(CreateShiftStates.waiting_name)
 async def create_shift_name(message: Message, state: FSMContext) -> None:
     name = (message.text or "").strip()
@@ -95,9 +84,6 @@ async def create_shift_name(message: Message, state: FSMContext) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Создание смены — шаг 3: ввод дат
-# ---------------------------------------------------------------------------
 @router.callback_query(CreateShiftStates.waiting_department, F.data.startswith("dep_"))
 async def create_shift_department(cb: CallbackQuery, state: FSMContext) -> None:
     dep_id = int(cb.data.split("_")[1])
@@ -116,9 +102,6 @@ async def create_shift_department(cb: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Создание смены — шаг 4: сохранение
-# ---------------------------------------------------------------------------
 @router.message(CreateShiftStates.waiting_dates)
 async def create_shift_dates(
     message: Message,
@@ -161,9 +144,6 @@ async def create_shift_dates(
     )
 
 
-# ---------------------------------------------------------------------------
-# Привязать педагога к смене
-# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "admin:shifts:assign")
 async def cb_assign_teacher_start(
     cb: CallbackQuery, state: FSMContext, session: AsyncSession
@@ -194,8 +174,9 @@ async def cb_assign_shift_selected(
     from app.repositories.user_repo import UserRepository
     shift_id = int(cb.data.split(":")[1])
     user_repo = UserRepository(session)
-    # ИСПРАВЛЕНО: get_by_role(UserRole.teacher) вместо get_by_role_active("teacher")
-    teachers = list(await user_repo.get_by_role(UserRole.teacher))
+    # ИСПРАВЛЕНО: get_by_role вместо несуществующего get_by_role_active
+    all_teachers = list(await user_repo.get_by_role(UserRole.teacher))
+    teachers = [t for t in all_teachers if t.is_active]
     if not teachers:
         await cb.message.edit_text(
             "Нет активных педагогов.",
@@ -232,9 +213,6 @@ async def cb_assign_teacher_confirm(
     )
 
 
-# ---------------------------------------------------------------------------
-# Архивировать смену
-# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "admin:shifts:archive")
 async def cb_archive_shift_start(
     cb: CallbackQuery, state: FSMContext, session: AsyncSession
