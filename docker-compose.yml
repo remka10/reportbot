@@ -1,70 +1,52 @@
-version: "3.9"
-
 services:
-  db:
-    image: postgres:15-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: reportbot
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d reportbot"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-
   bot:
     build: .
     restart: unless-stopped
     env_file: .env
     depends_on:
       db:
-        condition: service_healthy     # ← ждём ГОТОВНОСТИ postgres, а не просто запуска
+        condition: service_healthy
+    networks:
+      - reportbotnet
     volumes:
-      - ./app/reports:/app/app/reports
-      - ./app/templates:/app/app/templates
-
-volumes:
-  pg_data:
+      - reports_data:/app/app/reports
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
 
   db:
     image: postgres:15-alpine
     restart: unless-stopped
-    network_mode: host
+    env_file: .env
     environment:
       POSTGRES_DB: reportbot
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - reportbotnet
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d reportbot"]
       interval: 5s
       timeout: 5s
-      retries: 5
-   # networks:
-    #  - reportbot_net
+      retries: 10
+      start_period: 15s
 
   nginx:
     image: nginx:alpine
     restart: unless-stopped
-    network_mode: host
-   # ports:
-    #  - "80:80"
-     # - "443:443"
+    ports:
+      - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./certbot/conf:/etc/letsencrypt:ro
       - ./certbot/www:/var/www/certbot:ro
-    # ИСПРАВЛЕНО: nginx ждёт health бота
+    networks:
+      - reportbotnet
     depends_on:
       - bot
-   # networks:
-     # - reportbot_net
 
   certbot:
     image: certbot/certbot
@@ -72,10 +54,15 @@ volumes:
       - ./certbot/conf:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
 
+networks:
+  reportbotnet:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
 volumes:
   postgres_data:
   reports_data:
-
-#networks:
- # reportbot_net:
-  #  driver: bridge
