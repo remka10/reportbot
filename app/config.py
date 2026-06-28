@@ -19,11 +19,11 @@ class Settings(BaseSettings):
     # Database
     database_url: str
 
-    # AiTunnel (единый прокси для LLM и STT)
-    aitunnel_api_key: str
+    # AiTunnel LLM
+    aitunnel_api_key: str = ""
     aitunnel_base_url: str = "https://api.aitunnel.ru/v1"
 
-    # Модели
+    # Models
     gemini_model: str = "gemini-2.5-flash"
     whisper_model: str = "whisper-1"
 

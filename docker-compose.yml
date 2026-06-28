@@ -6,13 +6,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    networks:
-      - reportbotnet
+    network_mode: host
     volumes:
       - reports_data:/app/app/reports
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
 
   db:
     image: postgres:15-alpine
@@ -45,8 +41,6 @@ services:
       - ./certbot/www:/var/www/certbot:ro
     networks:
       - reportbotnet
-    depends_on:
-      - bot
 
   certbot:
     image: certbot/certbot
@@ -57,11 +51,6 @@ services:
 networks:
   reportbotnet:
     driver: bridge
-    driver_opts:
-      com.docker.network.bridge.enable_ip_masquerade: "true"
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
 
 volumes:
   postgres_data:
