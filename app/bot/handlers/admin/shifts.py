@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.admin_menu import back_keyboard_admin, shifts_menu
 from app.bot.states.admin_states import CreateShiftStates, ArchiveShiftStates
-from app.database.models import DEPARTMENTS, User
+from app.database.models import DEPARTMENTS, User, UserRole  # ДОБАВЛЕНО: UserRole
 from app.repositories.shift_repo import ShiftRepository
 
 logger = logging.getLogger(__name__)
@@ -194,7 +194,8 @@ async def cb_assign_shift_selected(
     from app.repositories.user_repo import UserRepository
     shift_id = int(cb.data.split(":")[1])
     user_repo = UserRepository(session)
-    teachers = list(await user_repo.get_by_role_active("teacher"))
+    # ИСПРАВЛЕНО: get_by_role(UserRole.teacher) вместо get_by_role_active("teacher")
+    teachers = list(await user_repo.get_by_role(UserRole.teacher))
     if not teachers:
         await cb.message.edit_text(
             "Нет активных педагогов.",

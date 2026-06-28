@@ -9,7 +9,7 @@ from aiogram.types import Update
 from fastapi import FastAPI, Request, Response
 
 from app.bot.middlewares.auth import AuthMiddleware
-from app.bot.middlewares.dbsession import DbSessionMiddleware
+from app.bot.middlewares.db_session import DbSessionMiddleware  # ИСПРАВЛЕНО: db_session (с подчёркиванием)
 from app.bot.router import register_all_routers
 from app.config import get_settings
 from app.database.base import engine, AsyncSessionLocal
@@ -26,22 +26,18 @@ dp = Dispatcher(storage=MemoryStorage())
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Startup ──────────────────────────────────────────────────────────────
     logger.info("Starting ReportBot...")
 
-    # Регистрируем роутеры и middleware
     register_all_routers(dp)
     dp.update.middleware(DbSessionMiddleware(session_factory=AsyncSessionLocal))
     dp.update.middleware(AuthMiddleware())
 
-    # Ставим webhook
     webhook_url = f"{settings.webhook_url}/webhook/{settings.telegram_bot_token}"
     await bot.set_webhook(webhook_url)
     logger.info(f"Webhook set: {webhook_url}")
 
     yield
 
-    # ── Shutdown ─────────────────────────────────────────────────────────────
     logger.info("Shutting down ReportBot...")
     await bot.delete_webhook()
     await engine.dispose()

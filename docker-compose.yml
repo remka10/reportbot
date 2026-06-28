@@ -6,9 +6,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    network_mode: host
+    networks:
+      - reportbotnet
     volumes:
-      - reports_data:/app/app/reports
+      - reports_data:/app/reports
 
   db:
     image: postgres:15-alpine

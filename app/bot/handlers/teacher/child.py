@@ -2,7 +2,7 @@ import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.child_menu import (
@@ -34,7 +34,6 @@ async def cb_child_selected(
         await cb.answer("Учащийся не найден.", show_alert=True)
         return
 
-    # Проверяем — не финализирован ли уже отчёт
     report_repo = ReportRepository(session)
     data = await state.get_data()
     report = await report_repo.get_by_student(user.id, student_id, data.get("shift_id"))
@@ -48,8 +47,6 @@ async def cb_child_selected(
         return
 
     await state.update_data(student_id=student_id, student_name=student.full_name)
-
-    # Загружаем вопросы и ответы
     await _go_to_question(cb.message, state, user, session, question_num=1, edit=True)
 
 
@@ -77,10 +74,69 @@ async def _go_to_question(
     questions = list(await q_repo.get_all_active())
     if not questions:
         text = "⚠️ Список вопросов не загружен. Обратитесь к администратору."
-        await message_obj.answer(text) if not edit else await message_obj.edit_text(text)
+        if edit:
+            await message_obj.edit_text(text)
+        else:
+            await message_obj.answer(text)
         return
 
     total = len(questions)
-    # Нормализуем номер
     question_num = max(1, min(question_num, total))
-    question = next((q for q in questions if q.question_number == question_num), questions[0])
+    question = next(
+        (q for q in questions if q.question_number == question_num), questions[0]
+    )
+
+    # Получаем существующий ответ, если есть
+    existing_answer = await a_repo.get_by_teacher_student_question(
+        teacher_id=user.id,
+        student_id=student_id,
+        question_id=question.id,
+    )
+
+    answered_count = await a_repo.count_answered(user.id, student_id)
+
+    # Сохраняем текущий вопрос в FSM
+    await state.update_data(
+        current_question_id=question.id,
+        current_question_num=question.question_number,
+        current_question_text=question.question_text,
+        questions_total=total,
+    )
+    await state.set_state(QuestionStates.answering)
+
+    # Формируем текст сообщения
+    answered_flag = "✅ " if existing_answer else ""
+    text = (
+        f"{answered_flag}<b>Вопрос {question_num}/{total}</b>\n"
+        f"<i>Блок: {question.block_title}</i>\n\n"
+        f"{question.question_text}"
+    )
+    if existing_answer:
+        text += f"\n\n<b>Текущий ответ:</b>\n<blockquote>{existing_answer.answer_text}</blockquote>"
+
+    # Отображаем список вопросов с прогрессом
+    progress_list = []
+    for q in questions:
+        ans = await a_repo.get_by_teacher_student_question(user.id, student_id, q.id)
+        mark = "✅" if ans else "○"
+        active = "▶ " if q.question_number == question_num else "   "
+        progress_list.append(f"{active}{mark} {q.question_number}. {q.question_text[:40]}...")
+
+    if edit:
+        await message_obj.edit_text(
+            text,
+            reply_markup=question_keyboard(
+                question_num=question_num,
+                total=total,
+                has_answer=existing_answer is not None,
+            ),
+        )
+    else:
+        await message_obj.answer(
+            text,
+            reply_markup=question_keyboard(
+                question_num=question_num,
+                total=total,
+                has_answer=existing_answer is not None,
+            ),
+        )
