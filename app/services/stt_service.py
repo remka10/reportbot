@@ -1,68 +1,49 @@
+# app/services/stt_service.py
 import io
 import logging
-
 from aiogram.types import Voice
+from aiogram import Bot
 from openai import AsyncOpenAI
-
-from app.config import settings  # используем глобальный синглтон, не get_settings()
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
-
-_stt_client: AsyncOpenAI | None = None
-
-
-def _get_stt_client() -> AsyncOpenAI:
-    global _stt_client
-    if _stt_client is None:
-        _stt_client = AsyncOpenAI(
-            api_key=settings.aitunnel_api_key,
-            base_url=settings.aitunnel_base_url,
-        )
-    return _stt_client
+settings = get_settings()
 
 
 class STTService:
-    """Speech-to-Text через Whisper API (AiTunnel прокси). Только русский язык."""
+    def __init__(self) -> None:
+        self.client = AsyncOpenAI(
+            api_key=settings.aitunnel_api_key,
+            base_url=settings.aitunnel_base_url,
+        )
+        self.model = settings.whisper_model
+        self.max_size_bytes = settings.max_audio_size_mb * 1024 * 1024
 
-    async def transcribe_voice(self, voice: Voice, bot) -> str:
-        """
-        Скачивает голосовое сообщение и транскрибирует через Whisper.
-
-        Raises:
-            ValueError: если файл слишком большой
-            RuntimeError: при ошибке API
-        """
-        max_bytes = settings.max_audio_size_mb * 1024 * 1024
-        if voice.file_size and voice.file_size > max_bytes:
+    async def transcribe_voice(self, voice: Voice, bot: Bot) -> str:
+        """Скачивает голосовое сообщение и транскрибирует через Whisper."""
+        if voice.file_size and voice.file_size > self.max_size_bytes:
             raise ValueError(
-                f"Голосовое сообщение слишком большое: "
-                f"{voice.file_size / 1024 / 1024:.1f} MB > {settings.max_audio_size_mb} MB"
+                f"Голосовое сообщение слишком большое "
+                f"(>{settings.max_audio_size_mb} МБ)."
             )
 
-        file_info = await bot.get_file(voice.file_id)
-        file_bytes = io.BytesIO()
-        await bot.download_file(file_info.file_path, file_bytes)
-        file_bytes.seek(0)
-        file_bytes.name = "voice.ogg"
+        # Скачиваем файл через aiogram Bot API
+        file = await bot.get_file(voice.file_id)
+        buf = io.BytesIO()
+        await bot.download_file(file.file_path, destination=buf)
+        buf.seek(0)
+        buf.name = "voice.ogg"  # OpenAI требует имя файла с расширением
 
-        logger.debug(
-            f"Transcribing voice: file_size={voice.file_size}, "
-            f"duration={voice.duration}s, model={settings.whisper_model}"
-        )
-
-        client = _get_stt_client()
-        transcript = await client.audio.transcriptions.create(
-            model=settings.whisper_model,
-            file=file_bytes,
+        response = await self.client.audio.transcriptions.create(
+            model=self.model,
+            file=buf,
             language="ru",
             response_format="text",
         )
+        return response.strip() if isinstance(response, str) else response
 
-        text = str(transcript).strip()
-        logger.info(f"Transcription done: {len(text)} chars, duration={voice.duration}s")
-        return text
-
-    async def clean_transcription(self, raw_transcription: str, question_text: str) -> str:
-        """Очищает транскрипцию от зачитанного вопроса через LLM."""
+    async def clean_transcription(self, raw_text: str, question_text: str) -> str:
+        """Делегирует очистку в LLMService."""
         from app.services.llm_service import LLMService
-        return await LLMService().clean_stt_transcription(raw_transcription, question_text)
+        llm = LLMService()
+        return await llm.clean_transcription(raw_text, question_text)

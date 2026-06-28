@@ -1,20 +1,12 @@
+# app/services/zip_service.py
 import io
 import logging
-import re
 import zipfile
 from pathlib import Path
-
 from app.database.models import Report, Student, Shift, User
-from app.services.docx_service import DocxService  # _safe_archive_name убран отсюда
+from app.services.docx_service import DocxService
 
 logger = logging.getLogger(__name__)
-
-
-def _safe_archive_name(name: str) -> str:
-    """Убирает символы, недопустимые в именах файлов/архивов."""
-    name = re.sub(r'[\\/*?:"<>|]', "_", name)
-    name = name.strip(". ")
-    return (name or "archive") + ".zip"
 
 
 class ZipService:
@@ -26,38 +18,27 @@ class ZipService:
         teacher: User,
         docx_service: DocxService,
     ) -> tuple[io.BytesIO, str]:
-        """
-        Создаёт ZIP-архив со всеми финализированными отчётами.
+        """Создаёт ZIP-архив всех отчётов. Возвращает (BytesIO, archive_name)."""
+        buf = io.BytesIO()
 
-        Returns:
-            (BytesIO буфер, имя архива)
-        """
-        archive_name = _safe_archive_name(shift.name)
-        buffer = io.BytesIO()
-
-        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
             for report, student in reports_with_students:
                 try:
-                    if report.docx_file_path and Path(report.docx_file_path).exists():
-                        docx_path = Path(report.docx_file_path)
-                    else:
-                        docx_path = docx_service.generate(
-                            report=report,
-                            student=student,
-                            shift=shift,
-                            teacher=teacher,
-                        )
-                    zf.write(str(docx_path), arcname=docx_path.name)
-                    logger.debug(f"Added to ZIP: {docx_path.name}")
+                    docx_path: Path = docx_service.generate(
+                        report=report,
+                        student=student,
+                        shift=shift,
+                        teacher=teacher,
+                    )
+                    zf.write(docx_path, arcname=docx_path.name)
                 except Exception as e:
                     logger.error(
-                        f"Failed to add {student.full_name} to ZIP: {e}",
+                        f"Failed to generate DOCX for student={student.full_name}: {e}",
                         exc_info=True,
                     )
 
-        buffer.seek(0)
-        logger.info(
-            f"ZIP created: {archive_name}, {len(reports_with_students)} reports, "
-            f"{buffer.getbuffer().nbytes} bytes"
-        )
-        return buffer, archive_name
+        safe_shift = shift.name.replace(" ", "_").replace("/", "-")
+        archive_name = f"reports_{safe_shift}.zip"
+
+        buf.seek(0)
+        return buf, archive_name

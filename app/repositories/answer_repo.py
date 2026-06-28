@@ -1,10 +1,8 @@
+# app/repositories/answer_repo.py
 import logging
 from typing import Sequence
-
-from sqlalchemy import delete, func, select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-
 from app.database.models import Answer, Question
 
 logger = logging.getLogger(__name__)
@@ -23,125 +21,93 @@ class AnswerRepository:
         answer_text: str,
         raw_audio_transcription: str | None = None,
     ) -> Answer:
-        """
-        INSERT ... ON CONFLICT (teacher_id, student_id, question_id) DO UPDATE.
-        Возвращает актуальный объект Answer.
-        """
-        stmt = (
-            pg_insert(Answer)
-            .values(
+        from datetime import datetime, timezone
+        result = await self.session.execute(
+            select(Answer).where(
+                Answer.teacher_id == teacher_id,
+                Answer.student_id == student_id,
+                Answer.question_id == question_id,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.answer_text = answer_text
+            existing.updated_at = datetime.now(timezone.utc)
+            if raw_audio_transcription:
+                existing.raw_audio_transcription = raw_audio_transcription
+            await self.session.flush()
+            return existing
+        else:
+            answer = Answer(
                 teacher_id=teacher_id,
                 student_id=student_id,
                 question_id=question_id,
                 answer_text=answer_text,
                 raw_audio_transcription=raw_audio_transcription,
             )
-            .on_conflict_do_update(
-                constraint="uq_answer",
-                set_={
-                    "answer_text": answer_text,
-                    "raw_audio_transcription": raw_audio_transcription,
-                    "updated_at": func.now(),
-                },
-            )
-            .returning(Answer)
-        )
-        result = await self.session.execute(stmt)
-        answer = result.scalar_one()
-        logger.debug(
-            f"Upserted answer teacher={teacher_id} student={student_id} q={question_id}"
-        )
-        return answer
+            self.session.add(answer)
+            await self.session.flush()
+            return answer
 
-    async def get_by_student(
-        self, teacher_id: int, student_id: int
-    ) -> Sequence[Answer]:
-        """Все ответы педагога по конкретному ребёнку."""
+    async def get_by_teacher_student_question(
+        self, teacher_id: int, student_id: int, question_id: int
+    ) -> Answer | None:
         result = await self.session.execute(
-            select(Answer)
-            .where(
+            select(Answer).where(
                 Answer.teacher_id == teacher_id,
                 Answer.student_id == student_id,
+                Answer.question_id == question_id,
             )
-            .order_by(Answer.question_id)
         )
-        return result.scalars().all()
+        return result.scalar_one_or_none()
 
     async def get_qa_pairs_for_report(
         self, teacher_id: int, student_id: int
     ) -> list[dict]:
-        """
-        Возвращает список {"question": "...", "answer": "..."} для промта LLM.
-        Только вопросы с ответами (пропущенные не включаются).
-        """
+        """Возвращает список {'question': str, 'answer': str} для LLM."""
         result = await self.session.execute(
-            select(Question, Answer)
-            .join(Answer, Answer.question_id == Question.id)
+            select(Answer, Question)
+            .join(Question, Answer.question_id == Question.id)
             .where(
                 Answer.teacher_id == teacher_id,
                 Answer.student_id == student_id,
                 Answer.answer_text.isnot(None),
-                Answer.answer_text != "",
             )
             .order_by(Question.question_number)
         )
         rows = result.all()
         return [
             {
-                "block": q.block_title,
-                "question_number": q.question_number,
-                "question": q.question_text,
-                "answer": a.answer_text,
+                "question": row.Question.question_text,
+                "answer": row.Answer.answer_text,
+                "block_title": row.Question.block_title,
             }
-            for q, a in rows
+            for row in rows
         ]
 
     async def count_answered(self, teacher_id: int, student_id: int) -> int:
-        """Количество заполненных ответов по ребёнку."""
         result = await self.session.execute(
-            select(func.count())
-            .select_from(Answer)
-            .where(
+            select(func.count(Answer.id)).where(
                 Answer.teacher_id == teacher_id,
                 Answer.student_id == student_id,
                 Answer.answer_text.isnot(None),
-                Answer.answer_text != "",
             )
         )
-        return result.scalar_one()
-
-    async def get_answered_question_ids(
-        self, teacher_id: int, student_id: int
-    ) -> set[int]:
-        """Множество question_id с непустыми ответами."""
-        result = await self.session.execute(
-            select(Answer.question_id)
-            .where(
-                Answer.teacher_id == teacher_id,
-                Answer.student_id == student_id,
-                Answer.answer_text.isnot(None),
-                Answer.answer_text != "",
-            )
-        )
-        return set(result.scalars().all())
+        return result.scalar_one() or 0
 
     async def get_progress_map(
         self, teacher_id: int, student_ids: list[int]
     ) -> dict[int, int]:
-        """
-        Возвращает {student_id: кол-во_ответов} для списка детей.
-        Используется для прогресс-индикатора в списке детей.
-        """
+        """Возвращает {student_id: answered_count} для списка учащихся."""
         if not student_ids:
             return {}
         result = await self.session.execute(
-            select(Answer.student_id, func.count().label("cnt"))
+            select(Answer.student_id, func.count(Answer.id))
             .where(
                 Answer.teacher_id == teacher_id,
                 Answer.student_id.in_(student_ids),
                 Answer.answer_text.isnot(None),
-                Answer.answer_text != "",
             )
             .group_by(Answer.student_id)
         )
-        return {row.student_id: row.cnt for row in result.all()}
+        return dict(result.all())

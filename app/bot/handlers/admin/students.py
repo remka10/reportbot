@@ -85,26 +85,30 @@ async def add_student_done(message: Message, state: FSMContext) -> None:
 # Список учащихся
 # ---------------------------------------------------------------------------
 
+class ViewStudentsStates(StatesGroup):
+    waiting_shift_select = State()
+
 @router.callback_query(F.data == "admin:students:list")
-async def cb_students_list(cb: CallbackQuery, session: AsyncSession) -> None:
+async def cb_students_list(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     shift_repo = ShiftRepository(session)
     shifts = list(await shift_repo.get_all_active())
     if not shifts:
         await cb.message.edit_text("Нет активных смен.", reply_markup=back_keyboard("admin:students"))
         return
+    await state.set_state(ViewStudentsStates.waiting_shift_select)  # ← добавить состояние
     await cb.message.edit_text(
         "Выберите смену для просмотра учащихся:",
         reply_markup=shifts_list_keyboard(shifts),
     )
 
-
-@router.callback_query(F.data.startswith("select_shift:"))
-async def students_list_shift_selected(cb: CallbackQuery, session: AsyncSession) -> None:
+@router.callback_query(ViewStudentsStates.waiting_shift_select, F.data.startswith("select_shift:"))
+async def students_list_shift_selected(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     shift_id = int(cb.data.split(":")[1])
     student_repo = StudentRepository(session)
     shift_repo = ShiftRepository(session)
     students = await student_repo.get_by_shift(shift_id)
     shift = await shift_repo.get_by_id(shift_id)
+    await state.clear()
     if not students:
         await cb.message.edit_text(
             f"В смене <b>{shift.name if shift else shift_id}</b> нет учащихся.",
@@ -113,10 +117,8 @@ async def students_list_shift_selected(cb: CallbackQuery, session: AsyncSession)
         return
     lines = [f"👦 <b>Учащиеся: {shift.name if shift else ''} ({len(students)})</b>"]
     for s in students:
-        lines.append(f"{s.position}. {s.full_name}")
+        lines.append(f"\n{s.position}. {s.full_name}")
     await cb.message.edit_text("".join(lines), reply_markup=back_keyboard("admin:students"))
-
-
 # ---------------------------------------------------------------------------
 # Редактировать имя
 # ---------------------------------------------------------------------------

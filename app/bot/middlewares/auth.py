@@ -1,83 +1,69 @@
+# app/bot/middlewares/auth.py
 import logging
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery, TelegramObject, Update
+from aiogram.types import TelegramObject, Update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database.models import User, UserRole
+from app.repositories.user_repo import UserRepository
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-PUBLIC_COMMANDS = {"/start"}
-
 
 class AuthMiddleware(BaseMiddleware):
-    """
-    Проверяет роль пользователя при каждом апдейте.
-
-    Логика:
-    1. Извлекаем Telegram user из апдейта.
-    2. Ищем пользователя в БД.
-    3. Если user_id == ADMIN_TELEGRAM_ID и в БД нет — создаём admin автоматически.
-    4. Если пользователя нет в БД — отправляем сообщение об отсутствии доступа.
-    5. Если is_active=False — отклоняем.
-    6. Если всё ок — кладём объект User в data["user"].
-    """
-
     async def __call__(
         self,
         handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        # Достаём tg_user из апдейта
-        tg_user = data.get("event_from_user")
+        session: AsyncSession | None = data.get("session")
+        if session is None:
+            return await handler(event, data)
+
+        # Извлекаем telegram_id из апдейта
+        update: Update = data.get("event_update") or event
+        tg_user = None
+
+        if hasattr(update, "message") and update.message:
+            tg_user = update.message.from_user
+        elif hasattr(update, "callback_query") and update.callback_query:
+            tg_user = update.callback_query.from_user
+
         if tg_user is None:
             return await handler(event, data)
 
-        session: AsyncSession = data["session"]
+        tg_id = tg_user.id
 
-        # --- Проверяем первого admin через env ---
-        db_user: User | None = await session.get(User, tg_user.id)
+        # Администратор — автоматически создаётся при первом старте
+        repo = UserRepository(session)
+        user = await repo.get_by_id(tg_id)
 
-        if db_user is None:
-            if tg_user.id == settings.admin_telegram_id:
-                # Создаём первого администратора автоматически
-                db_user = User(
-                    id=tg_user.id,
-                    username=tg_user.username,
-                    full_name=tg_user.full_name or "Администратор",
-                    role=UserRole.admin,
-                    is_active=True,
+        if user is None and tg_id == settings.admin_telegram_id:
+            user = await repo.create(
+                user_id=tg_id,
+                full_name=tg_user.full_name or "Admin",
+                role=UserRole.admin,
+                username=tg_user.username,
+            )
+            logger.info(f"Auto-created admin user id={tg_id}")
+
+        if user is None or not user.is_active:
+            # Неизвестный пользователь — блокируем, отвечаем
+            if hasattr(update, "message") and update.message:
+                await update.message.answer(
+                    "⛔ У вас нет доступа к этому боту.\n"
+                    "Обратитесь к администратору."
                 )
-                session.add(db_user)
-                await session.flush()
-                logger.info(f"Auto-created admin user id={tg_user.id}")
-            else:
-                # Пользователь не зарегистрирован
-                if isinstance(event, Message):
-                    await event.answer(
-                        "⛔ У вас нет доступа к этому боту.\n"
-                        "Обратитесь к администратору для получения доступа."
-                    )
-                elif isinstance(event, CallbackQuery):
-                    await event.answer("⛔ Нет доступа", show_alert=True)
-                return  # Прерываем обработку
+            elif hasattr(update, "callback_query") and update.callback_query:
+                await update.callback_query.answer(
+                    "⛔ Нет доступа.", show_alert=True
+                )
+            return  # НЕ вызываем handler
 
-        # --- Проверяем активность ---
-        if not db_user.is_active:
-            if isinstance(event, Message):
-                await event.answer("⛔ Ваш аккаунт деактивирован. Обратитесь к администратору.")
-            elif isinstance(event, CallbackQuery):
-                await event.answer("⛔ Аккаунт деактивирован", show_alert=True)
-            return
-
-        # Обновляем username если изменился
-        if db_user.username != tg_user.username:
-            db_user.username = tg_user.username
-
-        data["user"] = db_user
+        data["user"] = user  # ← КРИТИЧНО: инжектируем в data
         return await handler(event, data)

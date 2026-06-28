@@ -1,9 +1,11 @@
+# app/repositories/question_repo.py
+import logging
 from typing import Sequence
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.database.models import Question
+
+logger = logging.getLogger(__name__)
 
 
 class QuestionRepository:

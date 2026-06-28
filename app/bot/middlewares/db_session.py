@@ -1,21 +1,12 @@
-import logging
+# app/bot/middlewares/db_session.py
 from typing import Any, Awaitable, Callable
-
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-logger = logging.getLogger(__name__)
+from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 
 class DbSessionMiddleware(BaseMiddleware):
-    """
-    Открывает AsyncSession перед каждым апдейтом и закрывает после.
-    Сессия доступна в хэндлерах через параметр `session: AsyncSession`.
-    """
-
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        super().__init__()
         self.session_factory = session_factory
 
     async def __call__(
@@ -28,7 +19,7 @@ class DbSessionMiddleware(BaseMiddleware):
             data["session"] = session
             try:
                 result = await handler(event, data)
-                await session.commit()
+                await session.commit()   # ← КРИТИЧНО: без этого данные не сохраняются
                 return result
             except Exception:
                 await session.rollback()

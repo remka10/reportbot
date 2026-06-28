@@ -49,3 +49,7 @@ class DeleteStudentStates(StatesGroup):
     waiting_shift_select   = State()
     waiting_student_select = State()
     confirm                = State()
+
+    
+class ViewStudentsStates(StatesGroup):
+    waiting_shift_select = State()
