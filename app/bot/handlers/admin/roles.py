@@ -39,7 +39,7 @@ async def cmd_admin(message: Message, user: User) -> None:
         await message.answer("У вас нет доступа к этому разделу.")
         return
     await message.answer(
-        "🔧 <b>Панель администратора</b>Выберите раздел:",
+        "🔧 <b>Панель администратора</b>\nВыберите раздел:",
         reply_markup=admin_main_menu(is_admin=user.role == UserRole.admin),
     )
 
@@ -50,7 +50,7 @@ async def cb_admin_main(cb: CallbackQuery, user: User) -> None:
         await cb.answer("Нет доступа", show_alert=True)
         return
     await cb.message.edit_text(
-        "🔧 <b>Панель администратора</b>Выберите раздел:",
+        "🔧 <b>Панель администратора</b>\nВыберите раздел:",
         reply_markup=admin_main_menu(is_admin=user.role == UserRole.admin),
     )
 
@@ -83,30 +83,105 @@ async def cb_cancel(cb: CallbackQuery, state: FSMContext, user: User) -> None:
 async def cb_add_user_start(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AddUserStates.waiting_user_id)
     await cb.message.edit_text(
-        "➕ <b>Добавить пользователя</b>"
-        "Введите <b>Telegram ID</b> нового пользователя."
-        "Узнать ID можно через @userinfobot.",
+        "➕ <b>Добавить пользователя</b>\n\n"
+        "Отправьте одно из следующего:\n"
+        "• Числовой <b>Telegram ID</b> (узнать через @userinfobot)\n"
+        "• Ник в формате <b>@username</b>\n"
+        "• Перешлите <b>контакт</b> пользователя (через скрепку → Контакт)",
         reply_markup=back_keyboard("admin:users"),
     )
 
 
 @router.message(AddUserStates.waiting_user_id)
-async def add_user_id(message: Message, state: FSMContext) -> None:
-    text = message.text.strip() if message.text else ""
-    if not text.isdigit():
-        await message.answer("⚠️ Введите числовой Telegram ID.")
+async def add_user_id(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    """
+    Принимает:
+    - числовой ID
+    - @username
+    - пересланный контакт (message.contact)
+    """
+    # Вариант 1: пересланный контакт
+    if message.contact:
+        tg_id = message.contact.user_id
+        if not tg_id:
+            await message.answer(
+                "⚠️ Не удалось получить Telegram ID из контакта.\n"
+                "Попросите пользователя переслать контакт самостоятельно."
+            )
+            return
+        await state.update_data(new_user_id=tg_id)
+        await state.set_state(AddUserStates.waiting_full_name)
+        # Предзаполняем имя из контакта
+        contact_name = " ".join(
+            filter(None, [message.contact.first_name, message.contact.last_name])
+        ).strip()
+        if contact_name:
+            await state.update_data(prefilled_name=contact_name)
+            await message.answer(
+                f"✅ Контакт получен. ID: <code>{tg_id}</code>\n\n"
+                f"Введите <b>полное имя</b> пользователя (Фамилия Имя Отчество)\n"
+                f"или отправьте <b>.</b> чтобы использовать имя из контакта: <b>{contact_name}</b>"
+            )
+        else:
+            await message.answer(
+                f"✅ Контакт получен. ID: <code>{tg_id}</code>\n\n"
+                "Введите <b>полное имя</b> пользователя (Фамилия Имя Отчество):"
+            )
         return
-    await state.update_data(new_user_id=int(text))
-    await state.set_state(AddUserStates.waiting_full_name)
-    await message.answer("Введите <b>полное имя</b> пользователя (Фамилия Имя Отчество):")
+
+    text = (message.text or "").strip()
+
+    # Вариант 2: числовой ID
+    if text.isdigit():
+        await state.update_data(new_user_id=int(text))
+        await state.set_state(AddUserStates.waiting_full_name)
+        await message.answer("Введите <b>полное имя</b> пользователя (Фамилия Имя Отчество):")
+        return
+
+    # Вариант 3: @username
+    if text.startswith("@") or (text and not text.isdigit()):
+        username = text.lstrip("@")
+        repo = UserRepository(session)
+        found_user = await repo.get_by_username(username)
+        if found_user:
+            await state.update_data(new_user_id=found_user.id)
+            await state.set_state(AddUserStates.waiting_full_name)
+            await message.answer(
+                f"✅ Найден пользователь <b>@{username}</b> (ID: <code>{found_user.id}</code>)\n\n"
+                "Введите <b>полное имя</b> (или отправьте <b>.</b> чтобы оставить текущее: "
+                f"<b>{found_user.full_name}</b>):"
+            )
+            await state.update_data(prefilled_name=found_user.full_name)
+        else:
+            await message.answer(
+                f"⚠️ Пользователь <b>@{username}</b> не найден в системе.\n\n"
+                "Пользователь должен сначала написать боту хотя бы раз, "
+                "чтобы попасть в базу.\n\n"
+                "Введите числовой <b>Telegram ID</b> или перешлите контакт:"
+            )
+        return
+
+    await message.answer(
+        "⚠️ Неверный формат. Введите числовой Telegram ID, @username или перешлите контакт."
+    )
 
 
 @router.message(AddUserStates.waiting_full_name)
 async def add_user_name(message: Message, state: FSMContext) -> None:
-    full_name = (message.text or "").strip()
+    data = await state.get_data()
+    prefilled_name = data.get("prefilled_name", "")
+
+    raw = (message.text or "").strip()
+    # Точка = использовать предзаполненное имя
+    if raw == "." and prefilled_name:
+        full_name = prefilled_name
+    else:
+        full_name = raw
+
     if len(full_name) < 2:
         await message.answer("⚠️ Имя слишком короткое. Введите ещё раз:")
         return
+
     await state.update_data(full_name=full_name)
     await state.set_state(AddUserStates.waiting_role)
     await message.answer(
@@ -129,9 +204,9 @@ async def add_user_role(cb: CallbackQuery, state: FSMContext, user: User) -> Non
     await state.set_state(AddUserStates.confirm)
 
     await cb.message.edit_text(
-        f"Подтвердите добавление пользователя:"
-        f"• ID: <code>{data['new_user_id']}</code>"
-        f"• Имя: <b>{data['full_name']}</b>"
+        f"Подтвердите добавление пользователя:\n"
+        f"• ID: <code>{data['new_user_id']}</code>\n"
+        f"• Имя: <b>{data['full_name']}</b>\n"
         f"• Роль: <b>{role.value}</b>",
         reply_markup=confirm_keyboard(yes_data="admin:users:add:confirm"),
     )
@@ -176,7 +251,7 @@ async def cb_users_list(cb: CallbackQuery, session: AsyncSession) -> None:
         status = "✅" if t.is_active else "🚫"
         lines.append(f"{status} {t.full_name} | {uname} | <code>{t.id}</code>")
     await cb.message.edit_text(
-        "".join(lines),
+        "\n".join(lines),
         reply_markup=back_keyboard("admin:users"),
     )
 
@@ -194,7 +269,7 @@ async def cb_change_role_start(
         return
     repo = UserRepository(session)
     users = list(await repo.get_all_active())
-    users = [u for u in users if u.id != user.id]  # себя не показываем
+    users = [u for u in users if u.id != user.id]
     if not users:
         await cb.message.edit_text("Нет других пользователей.", reply_markup=back_keyboard("admin:users"))
         return
@@ -218,7 +293,7 @@ async def change_role_user_selected(
     await state.update_data(target_user_id=target_id)
     await state.set_state(ChangeRoleStates.waiting_new_role)
     await cb.message.edit_text(
-        f"Текущая роль <b>{target.full_name}</b>: {target.role.value}Выберите новую роль:",
+        f"Текущая роль <b>{target.full_name}</b>: {target.role.value}\nВыберите новую роль:",
         reply_markup=roles_keyboard(exclude_role=target.role),
     )
 

@@ -174,7 +174,7 @@ async def cb_assign_shift_selected(
     from app.repositories.user_repo import UserRepository
     shift_id = int(cb.data.split(":")[1])
     user_repo = UserRepository(session)
-    # ИСПРАВЛЕНО: get_by_role вместо несуществующего get_by_role_active
+    # get_by_role_active не существует — используем get_by_role + ручная фильтрация
     all_teachers = list(await user_repo.get_by_role(UserRole.teacher))
     teachers = [t for t in all_teachers if t.is_active]
     if not teachers:

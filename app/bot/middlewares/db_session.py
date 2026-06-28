@@ -25,7 +25,8 @@ class DbSessionMiddleware(BaseMiddleware):
                 result = await handler(event, data)
                 await session.commit()
                 return result
-            except Exception as e:
+            except Exception:
+                # rollback обязателен — без него сессия остаётся «грязной»
                 await session.rollback()
                 logger.error(f"=== HANDLER EXCEPTION ===\n{traceback.format_exc()}")
                 return None

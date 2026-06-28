@@ -1,8 +1,10 @@
 import logging
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.bot.keyboards.child_menu import report_review_keyboard, generate_report_keyboard
 from app.bot.keyboards.main_menu import after_finalize_menu, export_menu
 from app.bot.states.teacher_states import GenerationStates, QuestionStates
@@ -17,7 +19,6 @@ from app.services.stt_service import STTService
 logger = logging.getLogger(__name__)
 router = Router(name="teacher_generation")
 
-# Максимальная длина сообщения Telegram
 TG_MAX_TEXT = 4000
 
 
@@ -41,6 +42,7 @@ def _split_text(text: str, max_len: int = TG_MAX_TEXT) -> list[str]:
 # ---------------------------------------------------------------------------
 # Запуск генерации
 # ---------------------------------------------------------------------------
+
 @router.callback_query(F.data == "teacher:generate")
 async def cb_generate_report(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
@@ -49,17 +51,21 @@ async def cb_generate_report(
     student_id = data.get("student_id")
     shift_id = data.get("shift_id")
     student_name = data.get("student_name", "—")
+
     if not student_id or not shift_id:
         await cb.answer("Ошибка: не выбран ребёнок или смена.", show_alert=True)
         return
+
     await state.set_state(GenerationStates.generating)
     status_msg = await cb.message.edit_text(
         f"⏳ <b>Генерирую отчёт для {student_name}...</b>\n\n"
         f"Это займёт 10–30 секунд."
     )
+
     try:
         answer_repo = AnswerRepository(session)
         shift_repo = ShiftRepository(session)
+
         qa_pairs = await answer_repo.get_qa_pairs_for_report(user.id, student_id)
         if not qa_pairs:
             await status_msg.edit_text(
@@ -68,14 +74,17 @@ async def cb_generate_report(
             )
             await state.set_state(QuestionStates.answering)
             return
+
         ts = await shift_repo.get_teacher_shift(user.id, shift_id)
         shift_context = ts.shift_context if ts else ""
+
         llm = LLMService()
         report_text = await llm.generate_report(
             qa_pairs=qa_pairs,
             shift_context=shift_context,
             student_name=student_name,
         )
+
         report_repo = ReportRepository(session)
         existing = await report_repo.get_by_student(user.id, student_id, shift_id)
         if existing and not existing.is_finalized:
@@ -89,13 +98,16 @@ async def cb_generate_report(
                 generated_text=report_text,
             )
             report_id = new_report.id
+
         await report_repo.add_revision_message(
             report_id=report_id,
             role=DialogRole.assistant,
             content=report_text,
         )
+
         await state.update_data(report_id=report_id)
         await state.set_state(GenerationStates.reviewing)
+
         parts = _split_text(report_text)
         await status_msg.delete()
         for i, part in enumerate(parts):
@@ -107,6 +119,7 @@ async def cb_generate_report(
                           "Отчёт готов. Сохранить или исправить?",
                     reply_markup=report_review_keyboard(),
                 )
+
     except Exception as e:
         logger.error(f"Report generation error: {e}", exc_info=True)
         await status_msg.edit_text(
@@ -119,6 +132,7 @@ async def cb_generate_report(
 # ---------------------------------------------------------------------------
 # Финализация отчёта
 # ---------------------------------------------------------------------------
+
 @router.callback_query(GenerationStates.reviewing, F.data == "report:finalize")
 async def cb_finalize_report(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
@@ -127,18 +141,22 @@ async def cb_finalize_report(
     report_id = data.get("report_id")
     student_id = data.get("student_id")
     shift_id = data.get("shift_id")
+    student_name = data.get("student_name", "—")
+
     if not report_id:
         await cb.answer("Ошибка: отчёт не найден.", show_alert=True)
         return
+
     report_repo = ReportRepository(session)
     student_repo = StudentRepository(session)
+
     await report_repo.finalize(report_id)
+
     finalized_ids = await report_repo.get_finalized_student_ids(user.id, shift_id)
     all_students = await student_repo.get_by_shift(shift_id)
     done = len(finalized_ids)
     total = len(all_students)
-    data = await state.get_data()
-    student_name = data.get("student_name", "—")
+
     await state.set_state(GenerationStates.finalized)
     await cb.message.edit_text(
         f"✅ <b>Отчёт для {student_name} сохранён!</b>\n\n"
@@ -150,6 +168,7 @@ async def cb_finalize_report(
 # ---------------------------------------------------------------------------
 # Запрос на правку
 # ---------------------------------------------------------------------------
+
 @router.callback_query(GenerationStates.reviewing, F.data == "report:revise")
 async def cb_request_revision(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(GenerationStates.waiting_revision)
@@ -163,6 +182,7 @@ async def cb_request_revision(cb: CallbackQuery, state: FSMContext) -> None:
 # ---------------------------------------------------------------------------
 # Получение текстовой правки
 # ---------------------------------------------------------------------------
+
 @router.message(GenerationStates.waiting_revision, F.text)
 async def revision_text(
     message: Message, state: FSMContext, user: User, session: AsyncSession
@@ -177,6 +197,7 @@ async def revision_text(
 # ---------------------------------------------------------------------------
 # Получение голосовой правки
 # ---------------------------------------------------------------------------
+
 @router.message(GenerationStates.waiting_revision, F.voice)
 async def revision_voice(
     message: Message, state: FSMContext, user: User, session: AsyncSession
@@ -199,6 +220,7 @@ async def revision_voice(
 # ---------------------------------------------------------------------------
 # Применение правки
 # ---------------------------------------------------------------------------
+
 async def _apply_revision(
     message: Message,
     state: FSMContext,
@@ -209,11 +231,14 @@ async def _apply_revision(
     data = await state.get_data()
     report_id = data.get("report_id")
     student_name = data.get("student_name", "—")
+
     if not report_id:
         await message.answer("⚠️ Ошибка: отчёт не найден.")
         return
+
     status_msg = await message.answer(f"⏳ Применяю правки для {student_name}...")
     report_repo = ReportRepository(session)
+
     try:
         await report_repo.add_revision_message(
             report_id=report_id,
@@ -256,31 +281,42 @@ async def _apply_revision(
 # ---------------------------------------------------------------------------
 # Следующий ребёнок
 # ---------------------------------------------------------------------------
+
 @router.callback_query(F.data == "teacher:next_child")
 async def cb_next_child(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    # ИСПРАВЛЕНО: было _show_children_list — такой функции не существует
+    # ИСПРАВЛЕНО: _show_children_list → _show_children (функция в shift.py)
     from app.bot.handlers.teacher.shift import _show_children
+
     data = await state.get_data()
     shift_id = data.get("shift_id")
     if not shift_id:
         await cb.answer("Сначала выберите смену.", show_alert=True)
         return
+
     await state.update_data(student_id=None, student_name=None, report_id=None)
-    # ИСПРАВЛЕНО: передаём cb (CallbackQuery), а не cb.message
+    # ИСПРАВЛЕНО: передаём cb (CallbackQuery), а не cb.message — _show_children ожидает CallbackQuery
     await _show_children(cb, user, session, state, shift_id)
 
 
 # ---------------------------------------------------------------------------
-# Экспорт
+# Меню экспорта (только роутинг — сам экспорт в export.py)
+# ВАЖНО: callback_data "teacher:export" — отдельный от "export:menu" в export.py
 # ---------------------------------------------------------------------------
+
 @router.callback_query(F.data == "teacher:export")
-async def cb_export_menu(cb: CallbackQuery, state: FSMContext) -> None:
+async def cb_teacher_export_redirect(
+    cb: CallbackQuery, state: FSMContext
+) -> None:
+    """
+    Редирект из контекста генерации в меню экспорта.
+    Используется кнопкой after_finalize_menu → "📥 Скачать отчёты".
+    Настоящий экспорт обрабатывает export.py (export:single, export:zip).
+    """
     data = await state.get_data()
-    student_name = data.get("student_name", "")
+    student_name = data.get("student_name", "—")
     await cb.message.edit_text(
-        f"📥 <b>Скачать отчёты</b>\n\n"
-        f"Текущий ребёнок: {student_name or '—'}",
+        f"📥 <b>Экспорт отчётов</b>\n\nТекущий ребёнок: <b>{student_name}</b>",
         reply_markup=export_menu(),
     )

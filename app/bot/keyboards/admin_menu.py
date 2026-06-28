@@ -16,8 +16,8 @@ def admin_main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
 def users_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     """Меню управления пользователями."""
     rows = [
-        [InlineKeyboardButton(text="➕ Добавить педагога", callback_data="admin:users:add")],
-        [InlineKeyboardButton(text="👁 Список педагогов",  callback_data="admin:users:list")],
+        [InlineKeyboardButton(text="➕ Добавить педагога/модератора", callback_data="admin:users:add")],
+        [InlineKeyboardButton(text="👁 Список педагогов",             callback_data="admin:users:list")],
     ]
     if is_admin:
         rows.append(
@@ -57,7 +57,7 @@ def students_menu() -> InlineKeyboardMarkup:
 def departments_keyboard() -> InlineKeyboardMarkup:
     """Список департаментов для выбора при создании смены."""
     builder = InlineKeyboardBuilder()
-    # ИСПРАВЛЕНО: DEPARTMENTS — dict[int, dict], итерируем .items() как (id, info_dict)
+    # DEPARTMENTS — dict[int, dict], итерируем .items()
     for dept_id, dept_info in DEPARTMENTS.items():
         builder.button(text=dept_info["name"], callback_data=f"dept:{dept_id}")
     builder.adjust(1)
@@ -135,7 +135,6 @@ def back_keyboard(back_to: str) -> InlineKeyboardMarkup:
     )
 
 
-# ДОБАВЛЕНО: алиас, который импортирует admin/shifts.py
 def back_keyboard_admin(back_to: str) -> InlineKeyboardMarkup:
-    """Алиас back_keyboard для admin-хендлеров."""
+    """Алиас back_keyboard для admin-хендлеров (импортируется в shifts.py)."""
     return back_keyboard(back_to)

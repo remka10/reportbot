@@ -27,6 +27,7 @@ async def cb_child_selected(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
     student_id = int(cb.data.split(":")[-1])
+    await cb.answer()  # убираем "часики" на кнопке
 
     student_repo = StudentRepository(session)
     student = await student_repo.get_by_id(student_id)
@@ -38,16 +39,98 @@ async def cb_child_selected(
     data = await state.get_data()
     report = await report_repo.get_by_student(user.id, student_id, data.get("shift_id"))
     if report and report.is_finalized:
+        await state.update_data(student_id=student_id, student_name=student.full_name)
         await cb.message.edit_text(
-            f"✅ Отчёт для <b>{student.full_name}</b> уже финализирован."
+            f"✅ Отчёт для <b>{student.full_name}</b> уже финализирован.\n"
             "Хотите пересмотреть или скачать?",
             reply_markup=generate_report_keyboard(),
         )
-        await state.update_data(student_id=student_id, student_name=student.full_name)
         return
 
     await state.update_data(student_id=student_id, student_name=student.full_name)
     await _go_to_question(cb.message, state, user, session, question_num=1, edit=True)
+
+
+# ---------------------------------------------------------------------------
+# Навигация по вопросам (← / →)
+# ---------------------------------------------------------------------------
+
+@router.callback_query(QuestionStates.answering, F.data.startswith("q:prev:"))
+async def cb_prev_question(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    num = int(cb.data.split(":")[-1])
+    await cb.answer()
+    await _go_to_question(cb.message, state, user, session, question_num=num, edit=True)
+
+
+@router.callback_query(QuestionStates.answering, F.data.startswith("q:next:"))
+async def cb_next_question(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    num = int(cb.data.split(":")[-1])
+    await cb.answer()
+    await _go_to_question(cb.message, state, user, session, question_num=num, edit=True)
+
+
+@router.callback_query(QuestionStates.answering, F.data.startswith("q:goto:"))
+async def cb_goto_question(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    num = int(cb.data.split(":")[-1])
+    await cb.answer()
+    await _go_to_question(cb.message, state, user, session, question_num=num, edit=True)
+
+
+@router.callback_query(QuestionStates.answering, F.data == "q:skip")
+async def cb_skip_question(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    data = await state.get_data()
+    current_num = data.get("current_question_num", 1)
+    total = data.get("questions_total", 1)
+    await cb.answer()
+    if current_num < total:
+        await _go_to_question(cb.message, state, user, session, question_num=current_num + 1, edit=True)
+    else:
+        await cb.message.edit_text(
+            "Все вопросы пройдены. Можно генерировать отчёт:",
+            reply_markup=generate_report_keyboard(),
+        )
+
+
+@router.callback_query(QuestionStates.answering, F.data == "q:list")
+async def cb_questions_list(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    from app.repositories.question_repo import QuestionRepository
+    data = await state.get_data()
+    student_id = data.get("student_id")
+    q_repo = QuestionRepository(session)
+    a_repo = AnswerRepository(session)
+    questions = list(await q_repo.get_all_active())
+    answers = await a_repo.get_progress_map(user.id, [student_id]) if student_id else {}
+    answered_count = answers.get(student_id, 0) if student_id else 0
+    answered_ids: set[int] = set()
+    for q in questions:
+        ans = await a_repo.get_by_teacher_student_question(user.id, student_id, q.id)
+        if ans:
+            answered_ids.add(q.id)
+    await cb.answer()
+    await cb.message.edit_text(
+        f"📋 <b>Список вопросов</b>\nОтвечено: {len(answered_ids)}/{len(questions)}",
+        reply_markup=questions_list_keyboard(questions, answered_ids),
+    )
+
+
+@router.callback_query(F.data == "q:back")
+async def cb_back_from_list(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    data = await state.get_data()
+    current_num = data.get("current_question_num", 1)
+    await cb.answer()
+    await _go_to_question(cb.message, state, user, session, question_num=current_num, edit=True)
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +169,6 @@ async def _go_to_question(
         (q for q in questions if q.question_number == question_num), questions[0]
     )
 
-    # Получаем существующий ответ, если есть
     existing_answer = await a_repo.get_by_teacher_student_question(
         teacher_id=user.id,
         student_id=student_id,
@@ -95,7 +177,6 @@ async def _go_to_question(
 
     answered_count = await a_repo.count_answered(user.id, student_id)
 
-    # Сохраняем текущий вопрос в FSM
     await state.update_data(
         current_question_id=question.id,
         current_question_num=question.question_number,
@@ -104,7 +185,6 @@ async def _go_to_question(
     )
     await state.set_state(QuestionStates.answering)
 
-    # Формируем текст сообщения
     answered_flag = "✅ " if existing_answer else ""
     text = (
         f"{answered_flag}<b>Вопрос {question_num}/{total}</b>\n"
@@ -113,14 +193,6 @@ async def _go_to_question(
     )
     if existing_answer:
         text += f"\n\n<b>Текущий ответ:</b>\n<blockquote>{existing_answer.answer_text}</blockquote>"
-
-    # Отображаем список вопросов с прогрессом
-    progress_list = []
-    for q in questions:
-        ans = await a_repo.get_by_teacher_student_question(user.id, student_id, q.id)
-        mark = "✅" if ans else "○"
-        active = "▶ " if q.question_number == question_num else "   "
-        progress_list.append(f"{active}{mark} {q.question_number}. {q.question_text[:40]}...")
 
     keyboard = question_keyboard(
         current_num=question_num,
