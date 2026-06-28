@@ -17,7 +17,13 @@ from app.services.stt_service import STTService
 
 logger = logging.getLogger(__name__)
 router = Router(name="teacher_shift")
-stt_service = STTService()
+_stt_service: "STTService | None" = None
+
+def get_stt() -> "STTService":
+    global _stt_service
+    if _stt_service is None:
+        _stt_service = STTService()
+    return _stt_service
 
 
 @router.callback_query(F.data == "teacher:shifts")
@@ -148,7 +154,7 @@ async def save_context_voice(
     processing_msg = await message.answer("⏳ Распознаю голосовое сообщение...")
 
     try:
-        transcription = await stt_service.transcribe_voice(
+        transcription = await get_stt().transcribe_voice(
             message.voice, message.bot
         )
     except ValueError as e:

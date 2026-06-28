@@ -1,7 +1,8 @@
+# app/services/llm_service.py
 import logging
+import httpx
 from openai import AsyncOpenAI
-
-from app.config import settings
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -44,22 +45,20 @@ SYSTEM_PROMPT_REVISION = """
 Не добавляй информацию, которой нет в исходных ответах педагога.
 """
 
-# Единый клиент через AiTunnel (поддерживает Gemini и OpenAI-совместимые модели)
-_llm_client: AsyncOpenAI | None = None
 
-
-def _get_client() -> AsyncOpenAI:
-    global _llm_client
-    if _llm_client is None:
-        _llm_client = AsyncOpenAI(
-            api_key=settings.aitunnel_api_key,
+def _make_client() -> AsyncOpenAI:
+    settings = get_settings()
+    return AsyncOpenAI(
+        api_key=settings.aitunnel_api_key,
+        base_url=settings.aitunnel_base_url,
+        http_client=httpx.AsyncClient(
             base_url=settings.aitunnel_base_url,
-        )
-    return _llm_client
+            timeout=httpx.Timeout(120.0),
+        ),
+    )
 
 
 def _format_qa_pairs(qa_pairs: list[dict]) -> str:
-    """Форматирует список вопрос-ответ для промта."""
     lines = []
     current_block = None
     for item in qa_pairs:
@@ -72,9 +71,9 @@ def _format_qa_pairs(qa_pairs: list[dict]) -> str:
 
 
 class LLMService:
-    """
-    Сервис генерации педагогических отчётов через AiTunnel (Gemini 2.5 Flash).
-    """
+    def __init__(self) -> None:
+        self.client = _make_client()
+        self.model = get_settings().gemini_model
 
     async def generate_report(
         self,
@@ -82,43 +81,21 @@ class LLMService:
         shift_context: str,
         student_name: str,
     ) -> str:
-        """
-        Генерирует первичный текст отчёта.
-
-        Args:
-            qa_pairs: список {"block", "question_number", "question", "answer"}
-            shift_context: контекст смены от педагога
-            student_name: имя ребёнка
-
-        Returns:
-            Текст отчёта от LLM.
-        """
         qa_formatted = _format_qa_pairs(qa_pairs)
-
         system_prompt = SYSTEM_PROMPT_GENERATION.format(
             shift_context=shift_context or "Контекст смены не указан.",
             qa_pairs=qa_formatted,
         )
-
-        logger.info(
-            f"Generating report for {student_name!r}, "
-            f"{len(qa_pairs)} QA pairs, context_len={len(shift_context or '')}"
-        )
-
-        client = _get_client()
-        response = await client.chat.completions.create(
-            model=settings.gemini_model,
+        logger.info(f"Generating report for {student_name!r}, {len(qa_pairs)} QA pairs")
+        response = await self.client.chat.completions.create(
+            model=self.model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": f"Напиши педагогический отчёт на ребёнка: {student_name}",
-                },
+                {"role": "user", "content": f"Напиши педагогический отчёт на ребёнка: {student_name}"},
             ],
             temperature=0.7,
             max_tokens=2000,
         )
-
         text = response.choices[0].message.content or ""
         logger.info(f"Report generated: {len(text)} chars for {student_name!r}")
         return text.strip()
@@ -128,33 +105,16 @@ class LLMService:
         revision_history: list[dict],
         revision_request: str,
     ) -> str:
-        """
-        Правит отчёт с учётом истории диалога.
-
-        Args:
-            revision_history: список {"role": "assistant"/"user", "content": "..."}
-            revision_request: новый запрос на правку
-
-        Returns:
-            Новая версия полного текста отчёта.
-        """
         messages = [{"role": "system", "content": SYSTEM_PROMPT_REVISION}]
         messages.extend(revision_history)
         messages.append({"role": "user", "content": revision_request})
-
-        logger.info(
-            f"Revising report: history_len={len(revision_history)}, "
-            f"request_len={len(revision_request)}"
-        )
-
-        client = _get_client()
-        response = await client.chat.completions.create(
-            model=settings.gemini_model,
+        logger.info(f"Revising report: history_len={len(revision_history)}")
+        response = await self.client.chat.completions.create(
+            model=self.model,
             messages=messages,
             temperature=0.6,
             max_tokens=2000,
         )
-
         text = response.choices[0].message.content or ""
         logger.info(f"Revision done: {len(text)} chars")
         return text.strip()
@@ -164,21 +124,9 @@ class LLMService:
         raw_transcription: str,
         question_text: str,
     ) -> str:
-        """
-        Очищает транскрипцию от зачитанного вопроса.
-
-        Args:
-            raw_transcription: сырая транскрипция от Whisper
-            question_text: текст вопроса, который мог быть зачитан
-
-        Returns:
-            Очищенный текст ответа педагога.
-        """
         system_prompt = SYSTEM_PROMPT_STT_CLEAN.format(question_text=question_text)
-
-        client = _get_client()
-        response = await client.chat.completions.create(
-            model=settings.gemini_model,
+        response = await self.client.chat.completions.create(
+            model=self.model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": raw_transcription},
@@ -186,6 +134,5 @@ class LLMService:
             temperature=0.1,
             max_tokens=500,
         )
-
         text = response.choices[0].message.content or raw_transcription
         return text.strip()

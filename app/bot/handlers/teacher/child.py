@@ -122,21 +122,12 @@ async def _go_to_question(
         active = "▶ " if q.question_number == question_num else "   "
         progress_list.append(f"{active}{mark} {q.question_number}. {q.question_text[:40]}...")
 
+    keyboard = question_keyboard(
+        current_num=question_num,
+        total=total,
+        has_prev=question_num > 1,
+    )
     if edit:
-        await message_obj.edit_text(
-            text,
-            reply_markup=question_keyboard(
-                question_num=question_num,
-                total=total,
-                has_answer=existing_answer is not None,
-            ),
-        )
+        await message_obj.edit_text(text, reply_markup=keyboard)
     else:
-        await message_obj.answer(
-            text,
-            reply_markup=question_keyboard(
-                question_num=question_num,
-                total=total,
-                has_answer=existing_answer is not None,
-            ),
-        )
+        await message_obj.answer(text, reply_markup=keyboard)

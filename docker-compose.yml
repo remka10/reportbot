@@ -3,13 +3,22 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
     depends_on:
       db:
         condition: service_healthy
     networks:
       - reportbotnet
+    ports:
+      - "8000:8000"
     volumes:
+      - .:/app
       - reports_data:/app/reports
+    extra_hosts:
+      - "api.telegram.org:149.154.167.220"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
 
   db:
     image: postgres:15-alpine
@@ -52,6 +61,7 @@ services:
 networks:
   reportbotnet:
     driver: bridge
+    enable_ipv6: false
 
 volumes:
   postgres_data:

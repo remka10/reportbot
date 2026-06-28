@@ -1,7 +1,7 @@
-# app/bot/handlers/admin/students.py
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,14 +55,25 @@ async def add_student_shift_selected(cb: CallbackQuery, state: FSMContext) -> No
     await state.set_state(AddStudentStates.waiting_full_name)
     await cb.message.edit_text(
         "Введите <b>полное имя</b> учащегося (Фамилия Имя):\n"
-        "<i>Чтобы добавить нескольких — отправляйте по одному сообщению.</i>",
+        "<i>Чтобы добавить нескольких — отправляйте по одному сообщению.</i>\n"
+        "Когда закончите — нажмите /done",
         reply_markup=back_keyboard("admin:students"),
     )
 
 
-@router.message(AddStudentStates.waiting_full_name)
+# ВАЖНО: /done должен быть ВЫШЕ общего хендлера имени
+@router.message(AddStudentStates.waiting_full_name, Command("done"))
+async def add_student_done(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("✅ Добавление учащихся завершено.")
+
+
+@router.message(AddStudentStates.waiting_full_name, F.text)
 async def add_student_name(message: Message, state: FSMContext, session: AsyncSession) -> None:
     full_name = (message.text or "").strip()
+    if full_name.startswith("/"):
+        await message.answer("⚠️ Неизвестная команда. Введите имя или нажмите /done для завершения.")
+        return
     if len(full_name) < 2:
         await message.answer("⚠️ Имя слишком короткое. Введите ещё раз:")
         return
@@ -75,12 +86,6 @@ async def add_student_name(message: Message, state: FSMContext, session: AsyncSe
         f"Всего в смене: {count} уч.\n"
         f"Введите следующее имя или нажмите /done чтобы завершить."
     )
-
-
-@router.message(AddStudentStates.waiting_full_name, F.text == "/done")
-async def add_student_done(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    await message.answer("✅ Добавление учащихся завершено.", reply_markup=back_keyboard("admin:students"))
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +157,7 @@ async def edit_student_selected(cb: CallbackQuery, state: FSMContext, session: A
     )
 
 
-@router.message(EditStudentStates.waiting_new_name)
+@router.message(EditStudentStates.waiting_new_name, F.text)
 async def edit_student_name(message: Message, state: FSMContext, session: AsyncSession) -> None:
     new_name = (message.text or "").strip()
     if len(new_name) < 2:
