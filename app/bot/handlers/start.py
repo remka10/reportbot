@@ -72,9 +72,13 @@ async def _start_admin(message: Message, user: User) -> None:
         UserRole.moderator: "🛡 Модератор",
     }
     role_label = role_labels.get(user.role, user.role.value)
-    await message.answer(
+    text = (
         f"👋 Привет, <b>{user.full_name}</b>!\n"
         f"Роль: {role_label}\n\n"
-        "Используйте /admin для управления системой.",
-        reply_markup=admin_main_menu(is_admin=user.role == UserRole.admin),
+        "Используйте /admin для управления системой."
+    )
+    kb = admin_main_menu(is_admin=user.role == UserRole.admin)
+    await message.answer(
+        text,
+        reply_markup=kb,
     )
