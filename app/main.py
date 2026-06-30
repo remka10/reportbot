@@ -1,15 +1,14 @@
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
-from urllib.parse import unquote
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Update
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI
 
 from app.bot.middlewares.auth import AuthMiddleware
 from app.bot.middlewares.db_session import DbSessionMiddleware
@@ -17,8 +16,22 @@ from app.bot.router import register_all_routers
 from app.config import get_settings
 from app.database.base import AsyncSessionLocal, engine
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+ALLOWED_UPDATES = [
+    "message",
+    "callback_query",
+    "inline_query",
+    "chat_member",
+    "my_chat_member",
+]
+_polling_task: asyncio.Task | None = None
+
 
 
 def _make_bot() -> Bot:
@@ -38,38 +51,52 @@ dp.update.middleware(DbSessionMiddleware(session_factory=AsyncSessionLocal))
 dp.update.middleware(AuthMiddleware())
 
 
+async def _run_polling() -> None:
+    """Фоновый long-polling. Исходящие соединения к api.telegram.org
+    работают стабильно, в отличие от входящего webhook на этом хостинге."""
+    while True:
+        try:
+            logger.info("Starting long-polling...")
+            await dp.start_polling(
+                bot,
+                allowed_updates=ALLOWED_UPDATES,
+                handle_signals=False,
+            )
+        except asyncio.CancelledError:
+            logger.info("Polling cancelled")
+            raise
+        except Exception:
+            logger.exception("Polling crashed — restart in 5s")
+            await asyncio.sleep(5)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting ReportBot...")
+    global _polling_task
+    logger.info("Starting ReportBot (long-polling mode)...")
 
-    webhook_url = f"{settings.webhook_url}/webhook/{settings.telegram_bot_token}"
-    allowed_updates = [
-        "message",
-        "callback_query",
-        "inline_query",
-        "chat_member",
-        "my_chat_member",
-    ]
+    # Снимаем возможный старый webhook и сбрасываем накопленные апдейты
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook deleted, switching to polling")
+    except Exception as e:
+        logger.warning("delete_webhook failed: %s", e)
 
-    for attempt in range(1, 4):
-        try:
-            await bot.set_webhook(
-                url=webhook_url,
-                drop_pending_updates=True,
-                allowed_updates=allowed_updates,
-            )
-            logger.info("Webhook set OK: %s", webhook_url)
-            break
-        except Exception as e:
-            logger.warning("Webhook attempt %s/3 failed: %s", attempt, e)
-            if attempt < 3:
-                await asyncio.sleep(5 * attempt)
-            else:
-                logger.exception("All webhook attempts failed")
+    _polling_task = asyncio.create_task(_run_polling())
 
     yield
 
     logger.info("Shutting down...")
+    if _polling_task is not None:
+        _polling_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _polling_task
+
+    try:
+        await dp.storage.close()
+    except Exception as e:
+        logger.warning("storage.close failed: %s", e)
+
     try:
         await bot.session.close()
     except Exception as e:
@@ -81,23 +108,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan, title="ReportBot")
 
 
-@app.post("/webhook/{token}")
-async def webhook_handler(token: str, request: Request) -> Response:
-    if unquote(token) != settings.telegram_bot_token:
-        return Response(status_code=403)
-
-    try:
-        body = await request.json()
-        update = Update.model_validate(body)
-        await dp.feed_update(bot=bot, update=update)
-    except Exception as e:
-        logger.exception("Webhook handler error: %s", e)
-
-    return Response(status_code=200)
-
-
 @app.get("/health")
 async def health_check():
+
     try:
         me = await bot.get_me()
         return {"status": "ok", "bot": me.username}
