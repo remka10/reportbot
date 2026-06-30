@@ -19,37 +19,43 @@ class DeactivateUserStates(StatesGroup):
 
 
 class CreateShiftStates(StatesGroup):
-    waiting_name       = State()
-    waiting_department = State()
-    waiting_dates      = State()
+    # Департамент больше НЕ выбирается — при создании смены автоматически
+    # создаются все 9 департаментов.
+    waiting_name  = State()
+    waiting_dates = State()
 
 
-class ArchiveShiftStates(StatesGroup):  # отсутствовал — добавлен
+class ArchiveShiftStates(StatesGroup):
     waiting_shift_select = State()
     confirm              = State()
 
 
 class AssignTeacherStates(StatesGroup):
-    waiting_shift_select   = State()
-    waiting_teacher_select = State()
+    waiting_shift_select      = State()
+    waiting_department_select = State()
+    waiting_teacher_select    = State()
 
 
 class AddStudentStates(StatesGroup):
-    waiting_shift_select = State()
-    waiting_full_name    = State()  # было waiting_fullname — не совпадало с students.py
+    waiting_shift_select      = State()
+    waiting_department_select = State()
+    waiting_full_name         = State()
 
 
 class EditStudentStates(StatesGroup):
-    waiting_shift_select   = State()
-    waiting_student_select = State()
-    waiting_new_name       = State()
+    waiting_shift_select      = State()
+    waiting_department_select = State()
+    waiting_student_select    = State()
+    waiting_new_name          = State()
 
 
 class DeleteStudentStates(StatesGroup):
-    waiting_shift_select   = State()
-    waiting_student_select = State()
-    confirm                = State()
+    waiting_shift_select      = State()
+    waiting_department_select = State()
+    waiting_student_select    = State()
+    confirm                   = State()
 
-    
+
 class ViewStudentsStates(StatesGroup):
-    waiting_shift_select = State()
+    waiting_shift_select      = State()
+    waiting_department_select = State()

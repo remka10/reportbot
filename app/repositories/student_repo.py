@@ -25,13 +25,29 @@ class StudentRepository:
         )
         return result.scalars().all()
 
+    async def get_by_department(self, department_id: int) -> Sequence[Student]:
+        result = await self.session.execute(
+            select(Student)
+            .where(Student.department_id == department_id)
+            .order_by(Student.position, Student.full_name)
+        )
+        return result.scalars().all()
+
     async def create(
-        self, full_name: str, shift_id: int, position: int | None = None
+        self,
+        full_name: str,
+        shift_id: int,
+        department_id: int | None = None,
+        position: int | None = None,
     ) -> Student:
         if position is None:
-            # Автоматически определяем следующую позицию
+            # Позиция считается в рамках департамента (если задан), иначе смены.
+            if department_id is not None:
+                scope_col, scope_val = Student.department_id, department_id
+            else:
+                scope_col, scope_val = Student.shift_id, shift_id
             result = await self.session.execute(
-                select(func.max(Student.position)).where(Student.shift_id == shift_id)
+                select(func.max(Student.position)).where(scope_col == scope_val)
             )
             max_pos = result.scalar() or 0
             position = max_pos + 1
@@ -39,11 +55,15 @@ class StudentRepository:
         student = Student(
             full_name=full_name,
             shift_id=shift_id,
+            department_id=department_id,
             position=position,
         )
         self.session.add(student)
         await self.session.flush()
-        logger.info(f"Created student id={student.id} name={full_name!r} shift={shift_id}")
+        logger.info(
+            f"Created student id={student.id} name={full_name!r} "
+            f"shift={shift_id} dep={department_id}"
+        )
         return student
 
     async def update_name(self, student_id: int, new_name: str) -> bool:
@@ -66,5 +86,11 @@ class StudentRepository:
     async def count_by_shift(self, shift_id: int) -> int:
         result = await self.session.execute(
             select(func.count()).where(Student.shift_id == shift_id)
+        )
+        return result.scalar_one()
+
+    async def count_by_department(self, department_id: int) -> int:
+        result = await self.session.execute(
+            select(func.count()).where(Student.department_id == department_id)
         )
         return result.scalar_one()

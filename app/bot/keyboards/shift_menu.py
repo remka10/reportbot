@@ -1,11 +1,11 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from app.database.models import Shift
+from app.database.models import Shift, Department
 
 
 def shifts_keyboard(shifts: list[Shift]) -> InlineKeyboardMarkup:
-    """Список смен педагога."""
+    """Список смен педагога (LEGACY — оставлено для совместимости)."""
     builder = InlineKeyboardBuilder()
     for shift in shifts:
         builder.button(
@@ -16,8 +16,27 @@ def shifts_keyboard(shifts: list[Shift]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def departments_keyboard(
+    departments: list[Department],
+    shift_name_map: dict[int, str],
+) -> InlineKeyboardMarkup:
+    """
+    Список департаментов педагога с указанием смены:
+    «📂 Смена 1 2026 — Департамент управления».
+    """
+    builder = InlineKeyboardBuilder()
+    for d in departments:
+        shift_name = shift_name_map.get(d.shift_id, f"Смена {d.shift_id}")
+        builder.button(
+            text=f"📂 {shift_name} — {d.name}",
+            callback_data=f"teacher:department:{d.id}",
+        )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def context_exists_keyboard() -> InlineKeyboardMarkup:
-    """Кнопки при наличии существующего контекста смены."""
+    """Кнопки при наличии существующего контекста департамента."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [

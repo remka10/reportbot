@@ -13,6 +13,8 @@ from app.repositories.answer_repo import AnswerRepository
 from app.repositories.report_repo import ReportRepository
 from app.repositories.shift_repo import ShiftRepository
 from app.repositories.student_repo import StudentRepository
+from app.repositories.department_repo import DepartmentRepository
+
 from app.services.llm_service import LLMService
 from app.services.stt_service import STTService
 
@@ -75,8 +77,16 @@ async def cb_generate_report(
             await state.set_state(QuestionStates.answering)
             return
 
-        ts = await shift_repo.get_teacher_shift(user.id, shift_id)
-        shift_context = ts.shift_context if ts else ""
+        department_id = data.get("department_id")
+        shift_context = ""
+        if department_id:
+            dep_repo = DepartmentRepository(session)
+            td = await dep_repo.get_teacher_department(user.id, department_id)
+            shift_context = td.shift_context if td else ""
+        if not shift_context:
+            ts = await shift_repo.get_teacher_shift(user.id, shift_id)
+            shift_context = ts.shift_context if ts else ""
+
 
         llm = LLMService()
         report_text = await llm.generate_report(
@@ -147,15 +157,23 @@ async def cb_finalize_report(
         await cb.answer("Ошибка: отчёт не найден.", show_alert=True)
         return
 
+    department_id = data.get("department_id")
     report_repo = ReportRepository(session)
     student_repo = StudentRepository(session)
 
     await report_repo.finalize(report_id)
 
     finalized_ids = await report_repo.get_finalized_student_ids(user.id, shift_id)
-    all_students = await student_repo.get_by_shift(shift_id)
-    done = len(finalized_ids)
-    total = len(all_students)
+    if department_id:
+        dep_students = await student_repo.get_by_department(department_id)
+        dep_ids = {s.id for s in dep_students}
+        done = len({sid for sid in finalized_ids if sid in dep_ids})
+        total = len(dep_students)
+    else:
+        all_students = await student_repo.get_by_shift(shift_id)
+        done = len(finalized_ids)
+        total = len(all_students)
+
 
     await state.set_state(GenerationStates.finalized)
     await cb.message.edit_text(

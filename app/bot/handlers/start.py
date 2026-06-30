@@ -12,6 +12,8 @@ from app.database.models import User, UserRole
 from app.repositories.shift_repo import ShiftRepository
 from app.repositories.report_repo import ReportRepository
 from app.repositories.student_repo import StudentRepository
+from app.repositories.department_repo import DepartmentRepository
+
 
 logger = logging.getLogger(__name__)
 router = Router(name="start")
@@ -32,31 +34,40 @@ async def cmd_start(
 async def _start_teacher(
     message: Message, user: User, session: AsyncSession
 ) -> None:
-    """Главное меню педагога с краткой статистикой."""
+    """Главное меню педагога с краткой статистикой по департаментам."""
     shift_repo = ShiftRepository(session)
-    shifts = list(await shift_repo.get_for_teacher(user.id))
+    dep_repo = DepartmentRepository(session)
+    departments = list(await dep_repo.get_for_teacher(user.id))
 
-    if not shifts:
+    if not departments:
         await message.answer(
             f"👋 Привет, <b>{user.full_name}</b>!\n\n"
-            "У вас пока нет привязанных смен.\n"
-            "Обратитесь к администратору, чтобы вас добавили в смену."
+            "У вас пока нет привязанных департаментов.\n"
+            "Обратитесь к администратору, чтобы вас добавили в департамент."
         )
         return
 
-    # Статистика по активным сменам
+    # Статистика по департаментам педагога
+    report_repo = ReportRepository(session)
+    student_repo = StudentRepository(session)
+    shift_name_cache: dict[int, str] = {}
     stats_lines = []
-    for shift in shifts[:3]:  # Показываем до 3 смен
-        report_repo = ReportRepository(session)
-        student_repo = StudentRepository(session)
-        finalized = await report_repo.get_finalized_student_ids(user.id, shift.id)
-        students = await student_repo.get_by_shift(shift.id)
+    for dep in departments[:3]:  # Показываем до 3 департаментов
+        if dep.shift_id not in shift_name_cache:
+            shift = await shift_repo.get_by_id(dep.shift_id)
+            shift_name_cache[dep.shift_id] = shift.name if shift else f"Смена {dep.shift_id}"
+        students = await student_repo.get_by_department(dep.id)
+        student_ids = {s.id for s in students}
+        finalized = await report_repo.get_finalized_student_ids(user.id, dep.shift_id)
+        done = len({sid for sid in finalized if sid in student_ids})
         stats_lines.append(
-            f"• {shift.name}: {len(finalized)}/{len(students)} отчётов готово"
+            f"• {shift_name_cache[dep.shift_id]} / {dep.name}: "
+            f"{done}/{len(students)} отчётов готово"
         )
 
     stats_text = "\n".join(stats_lines) if stats_lines else ""
-    stats_block = f"\n\n<b>Статус смен:</b>\n{stats_text}" if stats_text else ""
+    stats_block = f"\n\n<b>Статус департаментов:</b>\n{stats_text}" if stats_text else ""
+
 
     await message.answer(
         f"👋 Привет, <b>{user.full_name}</b>!{stats_block}\n\n"

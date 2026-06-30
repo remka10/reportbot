@@ -5,11 +5,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.keyboards.shift_menu import shifts_keyboard, context_exists_keyboard
+from app.bot.keyboards.shift_menu import departments_keyboard, context_exists_keyboard
 from app.bot.keyboards.child_menu import children_keyboard
 from app.bot.states.teacher_states import ShiftSelectStates, ChildSelectStates
 from app.database.models import User
 from app.repositories.shift_repo import ShiftRepository
+from app.repositories.department_repo import DepartmentRepository
 from app.repositories.answer_repo import AnswerRepository
 from app.repositories.report_repo import ReportRepository
 from app.repositories.student_repo import StudentRepository
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 router = Router(name="teacher_shift")
 _stt_service: "STTService | None" = None
 
+
 def get_stt() -> "STTService":
     global _stt_service
     if _stt_service is None:
@@ -27,72 +29,81 @@ def get_stt() -> "STTService":
 
 
 @router.callback_query(F.data == "teacher:shifts")
-async def show_shifts(
+async def show_departments(
     callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
 ) -> None:
-    """Показывает список смен педагога."""
+    """Показывает список департаментов педагога (по всем его сменам)."""
     await state.clear()
+    dep_repo = DepartmentRepository(session)
     shift_repo = ShiftRepository(session)
-    shifts = list(await shift_repo.get_for_teacher(user.id))
+    departments = list(await dep_repo.get_for_teacher(user.id))
 
-    if not shifts:
+    if not departments:
         await callback.message.edit_text(
-            "📭 У вас нет привязанных смен.\n"
+            "📭 У вас нет привязанных департаментов.\n"
             "Обратитесь к администратору."
         )
         await callback.answer()
         return
 
+    # Карта shift_id -> название смены (для подписи кнопок)
+    shift_name_map: dict[int, str] = {}
+    for d in departments:
+        if d.shift_id not in shift_name_map:
+            shift = await shift_repo.get_by_id(d.shift_id)
+            shift_name_map[d.shift_id] = shift.name if shift else f"Смена {d.shift_id}"
+
     await callback.message.edit_text(
-        "📂 <b>Ваши смены</b>\n\nВыберите смену для работы:",
-        reply_markup=shifts_keyboard(shifts),
+        "📂 <b>Ваши департаменты</b>\n\nВыберите департамент для работы:",
+        reply_markup=departments_keyboard(departments, shift_name_map),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("teacher:shift:"))
-async def select_shift(
+@router.callback_query(F.data.startswith("teacher:department:"))
+async def select_department(
     callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
 ) -> None:
-    """Обрабатывает выбор смены."""
-    shift_id = int(callback.data.split(":")[-1])
+    """Обрабатывает выбор департамента."""
+    department_id = int(callback.data.split(":")[-1])
+    dep_repo = DepartmentRepository(session)
     shift_repo = ShiftRepository(session)
 
-    shift = await shift_repo.get_by_id(shift_id)
-    if shift is None:
-        await callback.answer("❌ Смена не найдена", show_alert=True)
+    department = await dep_repo.get_by_id(department_id)
+    if department is None:
+        await callback.answer("❌ Департамент не найден", show_alert=True)
         return
 
-    # Проверяем — есть ли контекст смены
-    teacher_shift = await shift_repo.get_teacher_shift(user.id, shift_id)
-    if teacher_shift is None:
-        await callback.answer("❌ Вы не привязаны к этой смене", show_alert=True)
+    teacher_dep = await dep_repo.get_teacher_department(user.id, department_id)
+    if teacher_dep is None:
+        await callback.answer("❌ Вы не привязаны к этому департаменту", show_alert=True)
         return
 
-    # Сохраняем выбранную смену в FSM
-    await state.update_data(shift_id=shift_id)
+    shift = await shift_repo.get_by_id(department.shift_id)
+    shift_name = shift.name if shift else f"Смена {department.shift_id}"
 
-    if teacher_shift.shift_context:
-        # Контекст уже есть — показываем и предлагаем выбор
+    # Сохраняем выбранный департамент и его смену в FSM
+    await state.update_data(department_id=department_id, shift_id=department.shift_id)
+
+    if teacher_dep.shift_context:
         context_preview = (
-            teacher_shift.shift_context[:300] + "..."
-            if len(teacher_shift.shift_context) > 300
-            else teacher_shift.shift_context
+            teacher_dep.shift_context[:300] + "..."
+            if len(teacher_dep.shift_context) > 300
+            else teacher_dep.shift_context
         )
         await callback.message.edit_text(
-            f"📂 <b>{shift.name}</b>\n"
-            f"🏢 {shift.department_name}\n\n"
-            f"<b>Контекст смены:</b>\n<i>{context_preview}</i>\n\n"
+            f"📂 <b>{shift_name}</b>\n"
+            f"🏢 {department.name}\n\n"
+            f"<b>Контекст:</b>\n<i>{context_preview}</i>\n\n"
             "Использовать сохранённый контекст или ввести новый?",
             reply_markup=context_exists_keyboard(),
         )
         await state.set_state(ShiftSelectStates.confirm_context)
     else:
-        # Контекста нет — просим ввести
         await callback.message.edit_text(
-            f"📂 <b>{shift.name}</b>\n"
-            f"🏢 {shift.department_name}\n\n"
-            "✏️ <b>Введите контекст смены</b> — расскажите о сюжете, "
+            f"📂 <b>{shift_name}</b>\n"
+            f"🏢 {department.name}\n\n"
+            "✏️ <b>Введите контекст</b> — расскажите о сюжете, "
             "чем занимались дети, ключевые события.\n\n"
             "Можно написать текстом или отправить <b>голосовое сообщение</b>."
         )
@@ -107,22 +118,17 @@ async def select_shift(
 async def use_existing_context(
     callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
 ) -> None:
-    """Педагог выбирает использовать существующий контекст."""
     data = await state.get_data()
-    shift_id = data["shift_id"]
-    await _show_children(callback, user, session, state, shift_id)
+    await _show_children(callback, user, session, state, data["department_id"])
     await callback.answer()
 
 
 @router.callback_query(
     ShiftSelectStates.confirm_context, F.data == "teacher:context:change"
 )
-async def change_context(
-    callback: CallbackQuery, state: FSMContext
-) -> None:
-    """Педагог хочет изменить контекст."""
+async def change_context(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.edit_text(
-        "✏️ <b>Введите новый контекст смены:</b>\n\n"
+        "✏️ <b>Введите новый контекст:</b>\n\n"
         "Расскажите о сюжете, чем занимались дети, ключевые события.\n"
         "Можно написать текстом или отправить голосовое сообщение."
     )
@@ -134,29 +140,23 @@ async def change_context(
 async def save_context_text(
     message: Message, user: User, session: AsyncSession, state: FSMContext
 ) -> None:
-    """Педагог вводит контекст текстом."""
     data = await state.get_data()
-    shift_id = data["shift_id"]
-    shift_repo = ShiftRepository(session)
-
-    await shift_repo.update_context(user.id, shift_id, message.text.strip())
-    await _show_children_message(message, user, session, state, shift_id)
+    department_id = data["department_id"]
+    dep_repo = DepartmentRepository(session)
+    await dep_repo.update_context(user.id, department_id, message.text.strip())
+    await _show_children_message(message, user, session, state, department_id)
 
 
 @router.message(ShiftSelectStates.entering_context, F.voice)
 async def save_context_voice(
     message: Message, user: User, session: AsyncSession, state: FSMContext
 ) -> None:
-    """Педагог вводит контекст голосом."""
     data = await state.get_data()
-    shift_id = data["shift_id"]
+    department_id = data["department_id"]
 
     processing_msg = await message.answer("⏳ Распознаю голосовое сообщение...")
-
     try:
-        transcription = await get_stt().transcribe_voice(
-            message.voice, message.bot
-        )
+        transcription = await get_stt().transcribe_voice(message.voice, message.bot)
     except ValueError as e:
         await processing_msg.delete()
         await message.answer(f"❌ {e}")
@@ -167,10 +167,40 @@ async def save_context_voice(
         await message.answer("❌ Не удалось распознать голосовое сообщение. Попробуйте ещё раз.")
         return
 
-    shift_repo = ShiftRepository(session)
-    await shift_repo.update_context(user.id, shift_id, transcription)
+    dep_repo = DepartmentRepository(session)
+    await dep_repo.update_context(user.id, department_id, transcription)
     await processing_msg.delete()
-    await _show_children_message(message, user, session, state, shift_id)
+    await _show_children_message(message, user, session, state, department_id)
+
+
+async def _build_children_view(
+    user: User,
+    session: AsyncSession,
+    state: FSMContext,
+    department_id: int,
+):
+    """Готовит данные для списка детей департамента."""
+    student_repo = StudentRepository(session)
+    answer_repo = AnswerRepository(session)
+    report_repo = ReportRepository(session)
+    dep_repo = DepartmentRepository(session)
+
+    department = await dep_repo.get_by_id(department_id)
+    shift_id = department.shift_id if department else None
+    students = list(await student_repo.get_by_department(department_id))
+
+    if not students:
+        return None, None, None, None
+
+    student_ids = [s.id for s in students]
+    progress_map = await answer_repo.get_progress_map(user.id, student_ids)
+    # Финализированные ограничиваем студентами этого департамента
+    all_finalized = await report_repo.get_finalized_student_ids(user.id, shift_id)
+    finalized_ids = {sid for sid in all_finalized if sid in set(student_ids)}
+
+    await state.update_data(department_id=department_id, shift_id=shift_id)
+    await state.set_state(ChildSelectStates.choosing_child)
+    return students, progress_map, finalized_ids, len(students)
 
 
 async def _show_children(
@@ -178,33 +208,20 @@ async def _show_children(
     user: User,
     session: AsyncSession,
     state: FSMContext,
-    shift_id: int,
+    department_id: int,
 ) -> None:
-    """Показывает список детей (версия для callback)."""
-    student_repo = StudentRepository(session)
-    answer_repo = AnswerRepository(session)
-    report_repo = ReportRepository(session)
-
-    students = list(await student_repo.get_by_shift(shift_id))
-
-    if not students:
+    students, progress_map, finalized_ids, total = await _build_children_view(
+        user, session, state, department_id
+    )
+    if students is None:
         await callback.message.edit_text(
-            "📭 В этой смене пока нет учащихся.\n"
+            "📭 В этом департаменте пока нет учащихся.\n"
             "Добавьте их через /admin."
         )
         return
-
-    student_ids = [s.id for s in students]
-    progress_map = await answer_repo.get_progress_map(user.id, student_ids)
-    finalized_ids = await report_repo.get_finalized_student_ids(user.id, shift_id)
-    finalized_count = len(finalized_ids)
-
-    await state.update_data(shift_id=shift_id)
-    await state.set_state(ChildSelectStates.choosing_child)
-
     await callback.message.edit_text(
         f"👦 <b>Список детей</b>\n"
-        f"Готово: {finalized_count}/{len(students)} отчётов\n\n"
+        f"Готово: {len(finalized_ids)}/{total} отчётов\n\n"
         "Выберите ребёнка:",
         reply_markup=children_keyboard(students, progress_map, finalized_ids),
     )
@@ -215,35 +232,22 @@ async def _show_children_message(
     user: User,
     session: AsyncSession,
     state: FSMContext,
-    shift_id: int,
+    department_id: int,
 ) -> None:
-    """Показывает список детей (версия для message)."""
-    student_repo = StudentRepository(session)
-    answer_repo = AnswerRepository(session)
-    report_repo = ReportRepository(session)
-
-    students = list(await student_repo.get_by_shift(shift_id))
-
-    if not students:
+    students, progress_map, finalized_ids, total = await _build_children_view(
+        user, session, state, department_id
+    )
+    if students is None:
         await message.answer(
-            "✅ Контекст смены сохранён!\n\n"
-            "📭 В этой смене пока нет учащихся. Добавьте их через /admin."
+            "✅ Контекст сохранён!\n\n"
+            "📭 В этом департаменте пока нет учащихся. Добавьте их через /admin."
         )
         await state.clear()
         return
-
-    student_ids = [s.id for s in students]
-    progress_map = await answer_repo.get_progress_map(user.id, student_ids)
-    finalized_ids = await report_repo.get_finalized_student_ids(user.id, shift_id)
-    finalized_count = len(finalized_ids)
-
-    await state.update_data(shift_id=shift_id)
-    await state.set_state(ChildSelectStates.choosing_child)
-
     await message.answer(
         f"✅ Контекст сохранён!\n\n"
         f"👦 <b>Список детей</b>\n"
-        f"Готово: {finalized_count}/{len(students)} отчётов\n\n"
+        f"Готово: {len(finalized_ids)}/{total} отчётов\n\n"
         "Выберите ребёнка:",
         reply_markup=children_keyboard(students, progress_map, finalized_ids),
     )
@@ -255,11 +259,11 @@ async def back_to_child_list(
 ) -> None:
     """Возврат к списку детей."""
     data = await state.get_data()
-    shift_id = data.get("shift_id")
+    department_id = data.get("department_id")
 
-    if not shift_id:
+    if not department_id:
         await callback.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
         return
 
-    await _show_children(callback, user, session, state, shift_id)
+    await _show_children(callback, user, session, state, department_id)
     await callback.answer()

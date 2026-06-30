@@ -75,10 +75,11 @@ class Shift(Base):
 
     id:            Mapped[int]           = mapped_column(Integer, primary_key=True, autoincrement=True)
     name:          Mapped[str]           = mapped_column(String(128), nullable=False)
-    # ИСПРАВЛЕНО: nullable=False — соответствует миграции 0001 (было nullable=True)
-    department_id: Mapped[int]           = mapped_column(Integer, nullable=False)
-    # ИСПРАВЛЕНО: nullable=False — соответствует миграции 0001 (было nullable=True)
+    # Смена теперь охватывает ВСЕ департаменты, поэтому department_id больше
+    # не обязателен (миграция 0002 делает столбец nullable).
+    department_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     start_date:    Mapped[date_type]     = mapped_column(Date, nullable=False)
+
     # ИСПРАВЛЕНО: nullable=False — соответствует миграции 0001 (было nullable=True)
     end_date:      Mapped[date_type]     = mapped_column(Date, nullable=False)
     is_active:     Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
@@ -95,6 +96,8 @@ class Shift(Base):
 
 
 class TeacherShift(Base):
+    # LEGACY: оставлено для обратной совместимости (миграция переносит данные
+    # в teacher_departments). Новый код использует TeacherDepartment.
     __tablename__ = "teacher_shifts"
 
     teacher_id:    Mapped[int]           = mapped_column(BigInteger, ForeignKey("users.id"), primary_key=True)
@@ -102,13 +105,47 @@ class TeacherShift(Base):
     shift_context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
+class Department(Base):
+    """
+    Департамент внутри смены. При создании смены автоматически создаются
+    все 9 департаментов (department_number 1..9 → DEPARTMENTS).
+    Студенты и педагоги привязываются к департаменту, а не к смене напрямую.
+    """
+    __tablename__ = "departments"
+    __table_args__ = (
+        UniqueConstraint("shift_id", "department_number", name="uq_department_shift_number"),
+    )
+
+    id:                Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shift_id:          Mapped[int] = mapped_column(Integer, ForeignKey("shifts.id"), nullable=False)
+    department_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    @property
+    def name(self) -> str:
+        return get_department_name(self.department_number)
+
+    @property
+    def color(self) -> str:
+        return get_department_hex(self.department_number)
+
+
+class TeacherDepartment(Base):
+    __tablename__ = "teacher_departments"
+
+    teacher_id:    Mapped[int]           = mapped_column(BigInteger, ForeignKey("users.id"), primary_key=True)
+    department_id: Mapped[int]           = mapped_column(Integer,    ForeignKey("departments.id"), primary_key=True)
+    shift_context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
 class Student(Base):
     __tablename__ = "students"
 
-    id:        Mapped[int]           = mapped_column(Integer,     primary_key=True, autoincrement=True)
-    full_name: Mapped[str]           = mapped_column(String(256), nullable=False)
-    shift_id:  Mapped[int]           = mapped_column(Integer,     ForeignKey("shifts.id"), nullable=False)
-    position:  Mapped[Optional[int]] = mapped_column(Integer,     nullable=True)
+    id:            Mapped[int]           = mapped_column(Integer,     primary_key=True, autoincrement=True)
+    full_name:     Mapped[str]           = mapped_column(String(256), nullable=False)
+    shift_id:      Mapped[int]           = mapped_column(Integer,     ForeignKey("shifts.id"), nullable=False)
+    department_id: Mapped[Optional[int]] = mapped_column(Integer,     ForeignKey("departments.id"), nullable=True)
+    position:      Mapped[Optional[int]] = mapped_column(Integer,     nullable=True)
+
 
 
 class Question(Base):

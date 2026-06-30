@@ -1,6 +1,7 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from app.database.models import Shift, User, UserRole, DEPARTMENTS
+from app.database.models import Shift, User, UserRole, DEPARTMENTS, Department
+
 
 
 def admin_main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
@@ -76,7 +77,23 @@ def shifts_list_keyboard(shifts: list[Shift]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def departments_list_keyboard(
+    departments: list[Department], back_to: str = "admin:shifts"
+) -> InlineKeyboardMarkup:
+    """Список департаментов смены в виде inline-кнопок."""
+    builder = InlineKeyboardBuilder()
+    for d in departments:
+        builder.button(
+            text=d.name,
+            callback_data=f"select_department:{d.id}",
+        )
+    builder.button(text="← Назад", callback_data=back_to)
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def users_list_keyboard(users: list[User]) -> InlineKeyboardMarkup:
+
     """Список пользователей в виде inline-кнопок."""
     builder = InlineKeyboardBuilder()
     for u in users:

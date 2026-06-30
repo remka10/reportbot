@@ -42,11 +42,12 @@ class ShiftRepository:
     async def create(
         self,
         name: str,
-        department_id: int,
         start_date: date,
         end_date: date,
         created_by: int,
+        department_id: int | None = None,
     ) -> Shift:
+
         shift = Shift(
             name=name,
             department_id=department_id,

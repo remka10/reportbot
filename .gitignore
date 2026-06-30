@@ -11,3 +11,4 @@ venv/
 *.log
 /app/reports/
 EOF
+memory-bank/

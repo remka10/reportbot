@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.admin_menu import (
     students_menu, shifts_list_keyboard, students_list_keyboard,
-    confirm_keyboard, back_keyboard,
+    confirm_keyboard, back_keyboard, departments_list_keyboard,
 )
 from app.bot.states.admin_states import (
     AddStudentStates, EditStudentStates, DeleteStudentStates,
@@ -17,6 +17,7 @@ from app.bot.states.admin_states import (
 from app.database.models import User, UserRole
 from app.repositories.shift_repo import ShiftRepository
 from app.repositories.student_repo import StudentRepository
+from app.repositories.department_repo import DepartmentRepository
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_students")
@@ -28,6 +29,23 @@ async def cb_students_menu(cb: CallbackQuery, user: User) -> None:
         await cb.answer("Нет доступа", show_alert=True)
         return
     await cb.message.edit_text("👦 <b>Управление учащимися</b>", reply_markup=students_menu())
+
+
+async def _show_departments(cb: CallbackQuery, session: AsyncSession, shift_id: int) -> bool:
+    """Показывает департаменты выбранной смены. Возвращает False если их нет."""
+    dep_repo = DepartmentRepository(session)
+    departments = list(await dep_repo.get_by_shift(shift_id))
+    if not departments:
+        await cb.message.edit_text(
+            "В этой смене нет департаментов.",
+            reply_markup=back_keyboard("admin:students"),
+        )
+        return False
+    await cb.message.edit_text(
+        "Выберите департамент:",
+        reply_markup=departments_list_keyboard(departments, back_to="admin:students"),
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -49,11 +67,21 @@ async def cb_add_student_start(cb: CallbackQuery, state: FSMContext, session: As
 
 
 @router.callback_query(AddStudentStates.waiting_shift_select, F.data.startswith("select_shift:"))
-async def add_student_shift_selected(cb: CallbackQuery, state: FSMContext) -> None:
+async def add_student_shift_selected(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     shift_id = int(cb.data.split(":")[1])
     await state.update_data(shift_id=shift_id)
+    await state.set_state(AddStudentStates.waiting_department_select)
+    await _show_departments(cb, session, shift_id)
+
+
+@router.callback_query(AddStudentStates.waiting_department_select, F.data.startswith("select_department:"))
+async def add_student_department_selected(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    department_id = int(cb.data.split(":")[1])
+    dep = await DepartmentRepository(session).get_by_id(department_id)
+    await state.update_data(department_id=department_id)
     await state.set_state(AddStudentStates.waiting_full_name)
     await cb.message.edit_text(
+        f"Департамент: <b>{dep.name if dep else department_id}</b>\n\n"
         "Введите <b>полное имя</b> учащегося (Фамилия Имя):\n"
         "<i>Чтобы добавить нескольких — отправляйте по одному сообщению.</i>\n"
         "Когда закончите — нажмите /done",
@@ -78,12 +106,17 @@ async def add_student_name(message: Message, state: FSMContext, session: AsyncSe
         await message.answer("⚠️ Имя слишком короткое. Введите ещё раз:")
         return
     data = await state.get_data()
+    department_id = data.get("department_id")
     repo = StudentRepository(session)
-    student = await repo.create(full_name=full_name, shift_id=data["shift_id"])
-    count = await repo.count_by_shift(data["shift_id"])
+    student = await repo.create(
+        full_name=full_name,
+        shift_id=data["shift_id"],
+        department_id=department_id,
+    )
+    count = await repo.count_by_department(department_id) if department_id else await repo.count_by_shift(data["shift_id"])
     await message.answer(
         f"✅ <b>{student.full_name}</b> добавлен (#{student.position}).\n"
-        f"Всего в смене: {count} уч.\n"
+        f"Всего в департаменте: {count} уч.\n"
         f"Введите следующее имя или нажмите /done чтобы завершить."
     )
 
@@ -109,18 +142,26 @@ async def cb_students_list(cb: CallbackQuery, state: FSMContext, session: AsyncS
 @router.callback_query(ViewStudentsStates.waiting_shift_select, F.data.startswith("select_shift:"))
 async def students_list_shift_selected(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     shift_id = int(cb.data.split(":")[1])
+    await state.update_data(shift_id=shift_id)
+    await state.set_state(ViewStudentsStates.waiting_department_select)
+    await _show_departments(cb, session, shift_id)
+
+
+@router.callback_query(ViewStudentsStates.waiting_department_select, F.data.startswith("select_department:"))
+async def students_list_department_selected(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    department_id = int(cb.data.split(":")[1])
     student_repo = StudentRepository(session)
-    shift_repo = ShiftRepository(session)
-    students = await student_repo.get_by_shift(shift_id)
-    shift = await shift_repo.get_by_id(shift_id)
+    dep_repo = DepartmentRepository(session)
+    students = await student_repo.get_by_department(department_id)
+    dep = await dep_repo.get_by_id(department_id)
     await state.clear()
     if not students:
         await cb.message.edit_text(
-            f"В смене <b>{shift.name if shift else shift_id}</b> нет учащихся.",
+            f"В департаменте <b>{dep.name if dep else department_id}</b> нет учащихся.",
             reply_markup=back_keyboard("admin:students"),
         )
         return
-    lines = [f"👦 <b>Учащиеся: {shift.name if shift else ''} ({len(students)})</b>"]
+    lines = [f"👦 <b>Учащиеся: {dep.name if dep else ''} ({len(students)})</b>"]
     for s in students:
         lines.append(f"{s.position}. {s.full_name}")
     await cb.message.edit_text("\n".join(lines), reply_markup=back_keyboard("admin:students"))
@@ -140,9 +181,20 @@ async def cb_edit_student_start(cb: CallbackQuery, state: FSMContext, session: A
 @router.callback_query(EditStudentStates.waiting_shift_select, F.data.startswith("select_shift:"))
 async def edit_student_shift(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     shift_id = int(cb.data.split(":")[1])
-    students = list(await StudentRepository(session).get_by_shift(shift_id))
     await state.update_data(shift_id=shift_id)
+    await state.set_state(EditStudentStates.waiting_department_select)
+    await _show_departments(cb, session, shift_id)
+
+
+@router.callback_query(EditStudentStates.waiting_department_select, F.data.startswith("select_department:"))
+async def edit_student_department(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    department_id = int(cb.data.split(":")[1])
+    students = list(await StudentRepository(session).get_by_department(department_id))
+    await state.update_data(department_id=department_id)
     await state.set_state(EditStudentStates.waiting_student_select)
+    if not students:
+        await cb.message.edit_text("В департаменте нет учащихся.", reply_markup=back_keyboard("admin:students"))
+        return
     await cb.message.edit_text("Выберите учащегося:", reply_markup=students_list_keyboard(students))
 
 
@@ -183,9 +235,20 @@ async def cb_delete_student_start(cb: CallbackQuery, state: FSMContext, session:
 @router.callback_query(DeleteStudentStates.waiting_shift_select, F.data.startswith("select_shift:"))
 async def delete_student_shift(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     shift_id = int(cb.data.split(":")[1])
-    students = list(await StudentRepository(session).get_by_shift(shift_id))
     await state.update_data(shift_id=shift_id)
+    await state.set_state(DeleteStudentStates.waiting_department_select)
+    await _show_departments(cb, session, shift_id)
+
+
+@router.callback_query(DeleteStudentStates.waiting_department_select, F.data.startswith("select_department:"))
+async def delete_student_department(cb: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    department_id = int(cb.data.split(":")[1])
+    students = list(await StudentRepository(session).get_by_department(department_id))
+    await state.update_data(department_id=department_id)
     await state.set_state(DeleteStudentStates.waiting_student_select)
+    if not students:
+        await cb.message.edit_text("В департаменте нет учащихся.", reply_markup=back_keyboard("admin:students"))
+        return
     await cb.message.edit_text("Выберите учащегося для удаления:", reply_markup=students_list_keyboard(students))
 
 
