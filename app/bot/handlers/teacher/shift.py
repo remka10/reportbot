@@ -66,6 +66,22 @@ async def select_department(
 ) -> None:
     """Обрабатывает выбор департамента."""
     department_id = int(callback.data.split(":")[-1])
+    await open_department(callback, user, session, state, department_id)
+
+
+async def open_department(
+    callback: CallbackQuery,
+    user: User,
+    session: AsyncSession,
+    state: FSMContext,
+    department_id: int,
+) -> None:
+    """
+    Открывает работу с департаментом: показывает контекст или просит ввести его.
+    Используется как педагогами, так и администраторами (через admin/fill.py).
+    Предполагается, что пользователь уже привязан к департаменту
+    (TeacherDepartment существует) — для админа привязка создаётся заранее.
+    """
     dep_repo = DepartmentRepository(session)
     shift_repo = ShiftRepository(session)
 
@@ -78,6 +94,7 @@ async def select_department(
     if teacher_dep is None:
         await callback.answer("❌ Вы не привязаны к этому департаменту", show_alert=True)
         return
+
 
     shift = await shift_repo.get_by_id(department.shift_id)
     shift_name = shift.name if shift else f"Смена {department.shift_id}"

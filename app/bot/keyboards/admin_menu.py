@@ -10,8 +10,10 @@ def admin_main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users")],
         [InlineKeyboardButton(text="🏕 Смены",        callback_data="admin:shifts")],
         [InlineKeyboardButton(text="👦 Учащиеся",     callback_data="admin:students")],
+        [InlineKeyboardButton(text="📝 Заполнить отчёты", callback_data="admin:fill")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 
 def users_menu(is_admin: bool = False) -> InlineKeyboardMarkup:

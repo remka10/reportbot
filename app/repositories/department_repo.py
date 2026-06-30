@@ -46,7 +46,18 @@ class DepartmentRepository:
         )
         return result.scalars().all()
 
+    async def get_all_active(self) -> Sequence[Department]:
+        """Все департаменты всех активных смен (для админа/модератора)."""
+        result = await self.session.execute(
+            select(Department)
+            .join(Shift, Shift.id == Department.shift_id)
+            .where(Shift.is_active == True)
+            .order_by(Shift.start_date.desc(), Department.department_number)
+        )
+        return result.scalars().all()
+
     async def get_for_teacher(self, teacher_id: int) -> Sequence[Department]:
+
         """Все департаменты активных смен, к которым привязан педагог."""
         result = await self.session.execute(
             select(Department)

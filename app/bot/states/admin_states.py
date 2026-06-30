@@ -59,3 +59,11 @@ class DeleteStudentStates(StatesGroup):
 class ViewStudentsStates(StatesGroup):
     waiting_shift_select      = State()
     waiting_department_select = State()
+
+
+class AdminFillStates(StatesGroup):
+    """Заполнение отчётов администратором: выбор любой смены и департамента."""
+    waiting_shift_select      = State()
+    waiting_department_select = State()
+
+
