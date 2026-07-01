@@ -5,7 +5,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.keyboards.shift_menu import departments_keyboard, context_exists_keyboard
+from app.bot.keyboards.shift_menu import (
+    departments_keyboard,
+    context_exists_keyboard,
+    context_preview_keyboard,
+)
 from app.bot.keyboards.child_menu import children_keyboard
 from app.bot.states.teacher_states import ShiftSelectStates, ChildSelectStates
 from app.database.models import User
@@ -15,10 +19,12 @@ from app.repositories.answer_repo import AnswerRepository
 from app.repositories.report_repo import ReportRepository
 from app.repositories.student_repo import StudentRepository
 from app.services.stt_service import STTService
+from app.services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 router = Router(name="teacher_shift")
 _stt_service: "STTService | None" = None
+_llm_service: "LLMService | None" = None
 
 
 def get_stt() -> "STTService":
@@ -26,6 +32,58 @@ def get_stt() -> "STTService":
     if _stt_service is None:
         _stt_service = STTService()
     return _stt_service
+
+
+def get_llm() -> "LLMService":
+    global _llm_service
+    if _llm_service is None:
+        _llm_service = LLMService()
+    return _llm_service
+
+
+async def _beautify_and_preview(
+    message: Message,
+    user: User,
+    session: AsyncSession,
+    state: FSMContext,
+    raw_context: str,
+) -> None:
+    """
+    Прогоняет надиктованный/введённый контекст смены через ИИ (AiTunnel),
+    показывает педагогу оформленный вариант и просит подтвердить сохранение.
+    Сам контекст в БД пока НЕ пишется — только после подтверждения (accept).
+    При ошибке ИИ — сохраняем исходный текст, чтобы педагог не потерял работу.
+    """
+    data = await state.get_data()
+    department_id = data["department_id"]
+
+    processing_msg = await message.answer("✨ Оформляю контекст с помощью ИИ...")
+    try:
+        beautified = await get_llm().beautify_shift_context(raw_context)
+    except Exception as e:
+        logger.error(f"LLM beautify error: {e}", exc_info=True)
+        await processing_msg.delete()
+        # Фолбэк: сохраняем сырой текст сразу, чтобы работа не пропала.
+        dep_repo = DepartmentRepository(session)
+        await dep_repo.update_context(user.id, department_id, raw_context)
+        await message.answer(
+            "⚠️ Не удалось оформить контекст через ИИ — сохранил ваш исходный текст."
+        )
+        await _show_children_message(message, user, session, state, department_id)
+        return
+
+    await state.update_data(raw_context=raw_context, pending_context=beautified)
+    await state.set_state(ShiftSelectStates.preview_context)
+    await processing_msg.delete()
+    await message.answer(
+        "✨ <b>Вот оформленный контекст смены:</b>\n\n"
+        f"<i>{beautified}</i>\n\n"
+        "Сохранить этот вариант, переформулировать заново "
+        "или ввести контекст заново?",
+        reply_markup=context_preview_keyboard(),
+    )
+
+
 
 
 @router.callback_query(F.data == "teacher:shifts")
@@ -157,20 +215,19 @@ async def change_context(callback: CallbackQuery, state: FSMContext) -> None:
 async def save_context_text(
     message: Message, user: User, session: AsyncSession, state: FSMContext
 ) -> None:
-    data = await state.get_data()
-    department_id = data["department_id"]
-    dep_repo = DepartmentRepository(session)
-    await dep_repo.update_context(user.id, department_id, message.text.strip())
-    await _show_children_message(message, user, session, state, department_id)
+    """Педагог ввёл контекст текстом → отдаём ИИ на оформление и показываем превью."""
+    raw = (message.text or "").strip()
+    if not raw:
+        await message.answer("❌ Пустой контекст. Напишите текст или отправьте голосовое.")
+        return
+    await _beautify_and_preview(message, user, session, state, raw)
 
 
 @router.message(ShiftSelectStates.entering_context, F.voice)
 async def save_context_voice(
     message: Message, user: User, session: AsyncSession, state: FSMContext
 ) -> None:
-    data = await state.get_data()
-    department_id = data["department_id"]
-
+    """Педагог надиктовал контекст голосом → STT → ИИ оформляет → превью."""
     processing_msg = await message.answer("⏳ Распознаю голосовое сообщение...")
     try:
         transcription = await get_stt().transcribe_voice(message.voice, message.bot)
@@ -184,10 +241,82 @@ async def save_context_voice(
         await message.answer("❌ Не удалось распознать голосовое сообщение. Попробуйте ещё раз.")
         return
 
-    dep_repo = DepartmentRepository(session)
-    await dep_repo.update_context(user.id, department_id, transcription)
     await processing_msg.delete()
-    await _show_children_message(message, user, session, state, department_id)
+    await _beautify_and_preview(message, user, session, state, transcription.strip())
+
+
+@router.callback_query(
+    ShiftSelectStates.preview_context, F.data == "teacher:context:accept"
+)
+async def accept_beautified_context(
+    callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
+) -> None:
+    """Педагог подтвердил оформленный ИИ контекст → сохраняем в БД."""
+    try:
+        data = await state.get_data()
+        department_id = data["department_id"]
+        pending = data.get("pending_context")
+        if not pending:
+            await callback.answer("❌ Нет оформленного контекста. Введите заново.", show_alert=True)
+            return
+        dep_repo = DepartmentRepository(session)
+        await dep_repo.update_context(user.id, department_id, pending)
+        await callback.answer("✅ Контекст сохранён")
+        await _show_children(callback, user, session, state, department_id)
+    except Exception as e:
+        logger.exception(f"Error in accept_beautified_context: {e}")
+        await callback.answer("⚠️ Произошла ошибка. Попробуйте снова.", show_alert=True)
+
+
+@router.callback_query(
+    ShiftSelectStates.preview_context, F.data == "teacher:context:regenerate"
+)
+async def regenerate_beautified_context(
+    callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
+) -> None:
+    """Педагог хочет другой вариант оформления того же исходного текста."""
+    try:
+        data = await state.get_data()
+        raw = data.get("raw_context")
+        if not raw:
+            await callback.answer("❌ Нет исходного текста. Введите заново.", show_alert=True)
+            return
+        await callback.answer("🔄 Переформулирую...")
+        await callback.message.edit_text("✨ Переформулирую контекст с помощью ИИ...")
+        try:
+            beautified = await get_llm().beautify_shift_context(raw)
+        except Exception as e:
+            logger.error(f"LLM regenerate error: {e}", exc_info=True)
+            await callback.message.answer(
+                "⚠️ Не удалось переформулировать. Попробуйте ещё раз или введите заново."
+            )
+            return
+        await state.update_data(pending_context=beautified)
+        await callback.message.answer(
+            "✨ <b>Новый вариант контекста:</b>\n\n"
+            f"<i>{beautified}</i>\n\n"
+            "Сохранить, переформулировать ещё раз или ввести заново?",
+            reply_markup=context_preview_keyboard(),
+        )
+    except Exception as e:
+        logger.exception(f"Error in regenerate_beautified_context: {e}")
+        await callback.answer("⚠️ Произошла ошибка. Попробуйте снова.", show_alert=True)
+
+
+@router.callback_query(
+    ShiftSelectStates.preview_context, F.data == "teacher:context:redo"
+)
+async def redo_context_input(callback: CallbackQuery, state: FSMContext) -> None:
+    """Педагог хочет заново надиктовать/ввести контекст."""
+    await callback.message.edit_text(
+        "✏️ <b>Введите контекст заново:</b>\n\n"
+        "Расскажите о сюжете, чем занимались дети, ключевые события.\n"
+        "Можно написать текстом или отправить голосовое сообщение."
+    )
+    await state.set_state(ShiftSelectStates.entering_context)
+    await callback.answer()
+
+
 
 
 async def _build_children_view(

@@ -5,6 +5,8 @@ class ShiftSelectStates(StatesGroup):
     choosing_shift = State()
     confirm_context = State()
     entering_context = State()
+    preview_context = State()  # ИИ оформил контекст — ждём подтверждения педагога
+
 
 
 class ChildSelectStates(StatesGroup):

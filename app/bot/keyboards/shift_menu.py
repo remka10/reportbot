@@ -51,3 +51,33 @@ def context_exists_keyboard() -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def context_preview_keyboard() -> InlineKeyboardMarkup:
+    """
+    Кнопки после того как ИИ оформил надиктованный контекст смены.
+    Педагог может сохранить оформленный вариант, переформулировать (ИИ ещё раз)
+    или ввести контекст заново.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Сохранить",
+                    callback_data="teacher:context:accept",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Переформулировать",
+                    callback_data="teacher:context:regenerate",
+                ),
+                InlineKeyboardButton(
+                    text="✏️ Ввести заново",
+                    callback_data="teacher:context:redo",
+                ),
+            ],
+        ]
+    )
+
+
