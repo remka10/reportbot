@@ -189,10 +189,12 @@ async def _go_to_question(
     text = (
         f"{answered_flag}<b>Вопрос {question_num}/{total}</b>\n"
         f"<i>Блок: {question.block_title}</i>\n\n"
-        f"{question.question_text}"
+        f"{question.question_text}\n\n"
+        f"🎤 <i>Ответьте голосом или текстом.</i>"
     )
     if existing_answer:
         text += f"\n\n<b>Текущий ответ:</b>\n<blockquote>{existing_answer.answer_text}</blockquote>"
+
 
     keyboard = question_keyboard(
         current_num=question_num,

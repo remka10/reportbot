@@ -1,13 +1,15 @@
+import asyncio
 import logging
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import Message, Voice
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.teacher.child import _go_to_question
 from app.bot.keyboards.child_menu import generate_report_keyboard
 from app.bot.states.teacher_states import QuestionStates
+from app.database.base import AsyncSessionLocal
 from app.database.models import User
 from app.repositories.answer_repo import AnswerRepository
 from app.services.stt_service import STTService
@@ -33,79 +35,123 @@ async def answer_text(
 
 
 # ---------------------------------------------------------------------------
-# Нажатие [🎤 Уже ответил голосом]
+# Голосовой ответ (принимается прямо в состоянии ответа на вопрос)
+#
+# Голос НЕ блокирует педагога: расшифровка идёт в фоне, а педагога сразу
+# перекидывает на следующий вопрос. Когда фоновая задача закончит распознавание,
+# ответ сохранится в БД и придёт уведомление с распознанным текстом.
 # ---------------------------------------------------------------------------
 
-@router.callback_query(QuestionStates.answering, F.data == "q:voice")
-async def cb_waiting_voice(cb: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(QuestionStates.waiting_voice)
-    await cb.message.edit_text(
-        "🎤 Отправьте голосовое сообщение с ответом на вопрос."
-        "<i>Говорите свободно — можете сначала повторить вопрос вслух, "
-        "это не страшно, бот извлечёт только ответ.</i>"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Голосовой ответ
-# ---------------------------------------------------------------------------
-
-@router.message(QuestionStates.waiting_voice, F.voice)
+@router.message(QuestionStates.answering, F.voice)
 async def answer_voice(
     message: Message, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    status_msg = await message.answer("🎤 Распознаю голосовое...")
-
     data = await state.get_data()
+    student_id = data["student_id"]
+    question_id = data["current_question_id"]
+    question_num = data["current_question_num"]
     question_text = data.get("current_question_text", "")
+    total = data["questions_total"]
 
+    # Запускаем расшифровку в фоне — педагог не ждёт её окончания.
+    asyncio.create_task(
+        _transcribe_and_save(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            voice=message.voice,
+            teacher_id=user.id,
+            student_id=student_id,
+            question_id=question_id,
+            question_num=question_num,
+            question_text=question_text,
+        )
+    )
+
+    await message.answer(
+        f"🎤 Голос для вопроса <b>{question_num}</b> принят — распознаю в фоне. "
+        "Можно сразу отвечать на следующий."
+    )
+
+    # Сразу переходим к следующему вопросу (или к генерации, если он был последним).
+    if question_num >= total:
+        await message.answer(
+            "Все вопросы пройдены. Можно генерировать отчёт "
+            "(последний голосовой ответ ещё дораспознаётся в фоне):",
+            reply_markup=generate_report_keyboard(),
+        )
+    else:
+        await _go_to_question(
+            message, state, user, session,
+            question_num=question_num + 1,
+            edit=False,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Фоновая расшифровка голоса и сохранение ответа
+#
+# Работает в отдельной задаче со своей сессией БД, поэтому не зависит от
+# сессии хендлера (которую middleware уже закоммитил/закрыл).
+# ---------------------------------------------------------------------------
+
+async def _transcribe_and_save(
+    bot: Bot,
+    chat_id: int,
+    voice: Voice,
+    teacher_id: int,
+    student_id: int,
+    question_id: int,
+    question_num: int,
+    question_text: str,
+) -> None:
     try:
         stt = STTService()
         # Шаг 1: транскрипция через Whisper
-        raw_transcription = await stt.transcribe_voice(message.voice, message.bot)
+        raw_transcription = await stt.transcribe_voice(voice, bot)
 
         if not raw_transcription or len(raw_transcription.strip()) < 3:
-            await status_msg.edit_text(
-                "⚠️ Не удалось распознать речь. Попробуйте ещё раз или напишите текстом."
+            await bot.send_message(
+                chat_id,
+                f"⚠️ Вопрос {question_num}: не удалось распознать голос. "
+                "Ответьте на него текстом или голосом ещё раз.",
             )
-            await state.set_state(QuestionStates.answering)
             return
 
         # Шаг 2: очистка от зачитанного вопроса через LLM
         clean_answer = await stt.clean_transcription(raw_transcription, question_text)
 
-        await status_msg.delete()
-        await message.answer(
-            f"<i>Распознано:</i><blockquote>{clean_answer}</blockquote>"
-        )
+        # Шаг 3: сохранение в БД (собственная сессия)
+        async with AsyncSessionLocal() as session:
+            repo = AnswerRepository(session)
+            await repo.upsert(
+                teacher_id=teacher_id,
+                student_id=student_id,
+                question_id=question_id,
+                answer_text=clean_answer,
+                raw_audio_transcription=raw_transcription,
+            )
+            await session.commit()
 
-        await _save_answer_and_advance(
-            message, state, user, session,
-            answer_text=clean_answer,
-            raw_audio_transcription=raw_transcription,
+        await bot.send_message(
+            chat_id,
+            f"✅ Вопрос {question_num} — ответ распознан и сохранён:\n"
+            f"<blockquote>{clean_answer}</blockquote>",
         )
 
     except Exception as e:
-        logger.error(f"Voice answer error: {e}", exc_info=True)
-        await status_msg.edit_text(
-            "⚠️ Ошибка при обработке голосового. Напишите ответ текстом."
-        )
-        await state.set_state(QuestionStates.answering)
+        logger.error(f"Background voice transcription error (q{question_num}): {e}", exc_info=True)
+        try:
+            await bot.send_message(
+                chat_id,
+                f"⚠️ Вопрос {question_num}: ошибка при распознавании голоса. "
+                "Ответьте на него текстом или голосом ещё раз.",
+            )
+        except Exception:
+            logger.error("Failed to notify user about transcription error", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
-# Голосовое пришло в неправильном состоянии — подсказка
-# ---------------------------------------------------------------------------
-
-@router.message(QuestionStates.answering, F.voice)
-async def voice_in_wrong_state(message: Message) -> None:
-    await message.answer(
-        "Чтобы ответить голосом, нажмите кнопку <b>🎤 Уже ответил голосом</b> под вопросом."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Сохранение ответа и переход к следующему вопросу
+# Сохранение текстового ответа и переход к следующему вопросу
 # ---------------------------------------------------------------------------
 
 async def _save_answer_and_advance(
@@ -135,8 +181,8 @@ async def _save_answer_and_advance(
         # Последний вопрос — предлагаем генерацию
         answered_count = await repo.count_answered(user.id, student_id)
         await message.answer(
-            f"✅ Ответ сохранён!"
-            f"Отвечено вопросов: <b>{answered_count}/{total}</b>"
+            f"✅ Ответ сохранён!\n"
+            f"Отвечено вопросов: <b>{answered_count}/{total}</b>\n"
             f"Все вопросы пройдены. Можно генерировать отчёт:",
             reply_markup=generate_report_keyboard(),
         )

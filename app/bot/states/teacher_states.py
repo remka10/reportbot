@@ -17,7 +17,10 @@ class ChildSelectStates(StatesGroup):
 
 class QuestionStates(StatesGroup):
     answering = State()
-    waiting_voice = State()
+    # Ответ на вопрос принимается прямо в состоянии answering: и текстом, и
+    # голосом. Голос расшифровывается асинхронно в фоне (см. teacher/questions.py),
+    # поэтому отдельное состояние ожидания голоса больше не нужно.
+
 
 
 class GenerationStates(StatesGroup):

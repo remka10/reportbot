@@ -39,13 +39,8 @@ def question_keyboard(
     total: int,
     has_prev: bool = True,
 ) -> InlineKeyboardMarkup:
-    """Навигация по вопросам + кнопка голосового."""
-    builder = InlineKeyboardBuilder()
-
-    # Кнопка голосового ввода
-    builder.button(text="🎤 Уже ответил голосом", callback_data="q:voice")
-    builder.button(text="⏭ Пропустить", callback_data="q:skip")
-
+    """Навигация по вопросам. Ответ принимается голосом или текстом
+    прямо в чат (без отдельной кнопки)."""
     # Навигация
     nav_row = []
     if has_prev and current_num > 1:
@@ -60,16 +55,15 @@ def question_keyboard(
             InlineKeyboardButton(text="→ Вперёд", callback_data=f"q:next:{current_num + 1}")
         )
 
-    builder.adjust(2)  # Голос + Пропустить в одну строку
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🎤 Уже ответил голосом", callback_data="q:voice"),
                 InlineKeyboardButton(text="⏭ Пропустить", callback_data="q:skip"),
             ],
             nav_row,
         ]
     )
+
 
 
 def questions_list_keyboard(
