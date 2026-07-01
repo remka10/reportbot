@@ -52,15 +52,23 @@ def export_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📄 Скачать DOCX (текущий ребёнок)",
+                    text="📄 PPTX (текущий)",
                     callback_data="export:single",
-                )
+                ),
+                InlineKeyboardButton(
+                    text="📕 PDF (текущий)",
+                    callback_data="export:single_pdf",
+                ),
             ],
             [
                 InlineKeyboardButton(
-                    text="📦 Скачать все ZIP",
+                    text="📦 Все PPTX (ZIP)",
                     callback_data="export:zip",
-                )
+                ),
+                InlineKeyboardButton(
+                    text="📦 Все PDF (ZIP)",
+                    callback_data="export:zip_pdf",
+                ),
             ],
             [
                 InlineKeyboardButton(
@@ -70,3 +78,5 @@ def export_menu() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+

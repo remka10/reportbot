@@ -140,6 +140,49 @@ async def cb_generate_report(
 
 
 # ---------------------------------------------------------------------------
+# Просмотр уже сохранённого отчёта
+# ---------------------------------------------------------------------------
+
+def _extract_final_report(text: str) -> str:
+    """Возвращает итоговый отчёт (часть после «=== ИТОГОВЫЙ ОТЧЁТ ===»),
+    либо весь текст, если разделитель не найден."""
+    if not text:
+        return ""
+    marker = "=== ИТОГОВЫЙ ОТЧЁТ ==="
+    idx = text.find(marker)
+    if idx != -1:
+        return text[idx + len(marker):].strip()
+    return text.strip()
+
+
+@router.callback_query(F.data == "report:view")
+async def cb_view_report(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    data = await state.get_data()
+    student_id = data.get("student_id")
+    shift_id = data.get("shift_id")
+    student_name = data.get("student_name", "—")
+
+    if not student_id or not shift_id:
+        await cb.answer("Сначала выберите ребёнка.", show_alert=True)
+        return
+
+    await cb.answer()
+    report_repo = ReportRepository(session)
+    report = await report_repo.get_by_student(user.id, student_id, shift_id)
+    if not report or not (report.generated_text or "").strip():
+        await cb.message.answer("⚠️ Сохранённый отчёт не найден.")
+        return
+
+    final_text = _extract_final_report(report.generated_text)
+    parts = _split_text(final_text)
+    await cb.message.answer(f"📄 <b>Отчёт: {student_name}</b>")
+    for part in parts:
+        await cb.message.answer(part)
+
+
+# ---------------------------------------------------------------------------
 # Финализация отчёта
 # ---------------------------------------------------------------------------
 
@@ -264,10 +307,18 @@ async def _apply_revision(
             content=revision_request,
         )
         history = list(await report_repo.get_revision_history(report_id))
+        # Преобразуем ORM-историю в сообщения чата (без последнего — это текущий запрос)
+        history_messages = [
+            {
+                "role": h.role.value if hasattr(h.role, "value") else str(h.role),
+                "content": h.content,
+            }
+            for h in history[:-1]
+        ]
         llm = LLMService()
         revised_text = await llm.revise_report(
+            revision_history=history_messages,
             revision_request=revision_request,
-            history=history[:-1],
         )
         await report_repo.update_text(report_id, revised_text)
         await report_repo.add_revision_message(

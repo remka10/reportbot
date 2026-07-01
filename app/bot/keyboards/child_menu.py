@@ -108,6 +108,38 @@ def generate_report_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def finalized_report_keyboard() -> InlineKeyboardMarkup:
+    """Меню для уже финализированного отчёта: посмотреть / скачать / перегенерировать."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👀 Посмотреть отчёт",
+                    callback_data="report:view",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📄 Скачать PPTX",
+                    callback_data="export:single",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Сгенерировать заново",
+                    callback_data="teacher:generate",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👦 К списку детей",
+                    callback_data="teacher:child_list",
+                ),
+            ],
+        ]
+    )
+
+
 def report_review_keyboard() -> InlineKeyboardMarkup:
     """Кнопки после получения сгенерированного отчёта."""
     return InlineKeyboardMarkup(

@@ -196,6 +196,7 @@ class RevisionHistory(Base):
 
     id:         Mapped[int]        = mapped_column(Integer,    primary_key=True, autoincrement=True)
     report_id:  Mapped[int]        = mapped_column(Integer,    ForeignKey("reports.id"), nullable=False)
-    role:       Mapped[DialogRole] = mapped_column(Enum(DialogRole), nullable=False)
+    role:       Mapped[DialogRole] = mapped_column(Enum(DialogRole, name="dialog_role", create_type=False), nullable=False)
+
     content:    Mapped[str]        = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime]   = mapped_column(DateTime(timezone=True), server_default=func.now())

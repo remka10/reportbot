@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.child_menu import (
     question_keyboard, questions_list_keyboard, generate_report_keyboard,
+    finalized_report_keyboard,
 )
 from app.bot.states.teacher_states import ChildSelectStates, QuestionStates
 from app.database.models import User
@@ -42,8 +43,8 @@ async def cb_child_selected(
         await state.update_data(student_id=student_id, student_name=student.full_name)
         await cb.message.edit_text(
             f"✅ Отчёт для <b>{student.full_name}</b> уже финализирован.\n"
-            "Хотите пересмотреть или скачать?",
-            reply_markup=generate_report_keyboard(),
+            "Хотите посмотреть, скачать или сгенерировать заново?",
+            reply_markup=finalized_report_keyboard(),
         )
         return
 

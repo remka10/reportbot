@@ -78,12 +78,14 @@ class AnswerRepository:
         rows = result.all()
         return [
             {
+                "question_number": row.Question.question_number,
                 "question": row.Question.question_text,
                 "answer": row.Answer.answer_text,
                 "block_title": row.Question.block_title,
             }
             for row in rows
         ]
+
 
     async def count_answered(self, teacher_id: int, student_id: int) -> int:
         result = await self.session.execute(

@@ -21,14 +21,21 @@ class ReportRepository:
     async def get_by_student(
         self, teacher_id: int, student_id: int, shift_id: int
     ) -> Report | None:
+        # ВНИМАНИЕ: исторически в БД могли появиться дубли отчётов на одну
+        # тройку (teacher, student, shift) — например, при повторной генерации.
+        # Поэтому НЕ используем scalar_one_or_none() (он падает с
+        # MultipleResultsFound), а берём самый свежий отчёт (по id DESC).
         result = await self.session.execute(
-            select(Report).where(
+            select(Report)
+            .where(
                 Report.teacher_id == teacher_id,
                 Report.student_id == student_id,
                 Report.shift_id == shift_id,
             )
+            .order_by(Report.id.desc())
+            .limit(1)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def create(
         self,

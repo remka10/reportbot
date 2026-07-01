@@ -47,12 +47,18 @@ SYSTEM_PROMPT_GENERATION = """
 Затем — строка-разделитель ровно такого вида:
 === ИТОГОВЫЙ ОТЧЁТ ===
 
-После неё — цельный связный педагогический отчёт на ребёнка на основе всех
-ответов (400–600 слов).
+После неё — короткий, цельный и связный педагогический отчёт на ребёнка
+(СТРОГО 120–180 слов, 2–3 небольших абзаца). Отчёт должен быть ёмким: лучше
+меньше слов, но по существу.
 
 ТРЕБОВАНИЯ:
 - Нумерация пунктов должна СТРОГО соответствовать номерам вопросов ниже (1..13).
 - Краткие ответы: 1–3 предложения, по делу, без «воды» и общих фраз.
+- ИТОГОВЫЙ ОТЧЁТ должен быть коротким и НЕ пересказывать пункты по очереди, а
+  органично СВЯЗЫВАТЬ ответы педагога между собой в единую картину личности
+  ребёнка, мягко вплетая контекст смены (роль в департаменте, сюжет) как фон.
+- Контекст смены используй лишь как лёгкую опору для связности — НЕ делай отчёт
+  зависимым от него и НЕ пересказывай сюжет смены подробно.
 - Тон: профессиональный, тёплый, конкретный.
 - Каждое утверждение подкреплено конкретикой из ответов педагога.
 - Язык: русский, литературный, без канцелярита.
@@ -145,13 +151,19 @@ def _make_client() -> AsyncOpenAI:
 def _format_qa_pairs(qa_pairs: list[dict]) -> str:
     lines = []
     current_block = None
-    for item in qa_pairs:
-        if item["block"] != current_block:
-            current_block = item["block"]
-            lines.append(f"\n=== {current_block} ===")
-        lines.append(f"Вопрос {item['question_number']}: {item['question']}")
-        lines.append(f"Ответ: {item['answer']}\n")
+    for idx, item in enumerate(qa_pairs, start=1):
+        # Ключ блока: поддерживаем и 'block_title' (из БД), и 'block' (legacy)
+        block = item.get("block_title") or item.get("block") or ""
+        if block and block != current_block:
+            current_block = block
+            lines.append(f"\n=== {block} ===")
+        q_num = item.get("question_number", idx)
+        question = item.get("question", "")
+        answer = item.get("answer", "")
+        lines.append(f"Вопрос {q_num}: {question}")
+        lines.append(f"Ответ: {answer}\n")
     return "\n".join(lines)
+
 
 
 class LLMService:
