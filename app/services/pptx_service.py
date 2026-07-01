@@ -293,19 +293,19 @@ def _estimate_height(paragraphs: list, width_emu: int) -> int:
     for runs, _align in paragraphs:
         text = "".join(r[0] for r in runs) or ""
         size = max((r[2] for r in runs), default=SIZE_BODY)
-        # 0.50 — чуть плотнее упаковка символов в строку (было 0.52),
-        # т.е. считаем, что в строку влезает больше текста → меньше «фантомных»
-        # переносов и лишней высоты.
-        char_pt = size * 0.50
+        # 0.72 — реальная средняя ширина кириллического символа (11pt Calleo
+        # вмещает ~55 симв/строку, а не 90). НАМЕРЕННО с запасом: лучше чуть
+        # переоценить высоту, чем обрезать текст и сломать вёрстку.
+        char_pt = size * 0.72
         cpl = max(1, int(width_pt / char_pt))
         segments = text.split("\n") if text else [""]
         lines = 0
         for seg in segments:
             lines += max(1, -(-len(seg) // cpl))  # ceil
-        # 1.28 — реальный межстрочный интервал (был раздутый 1.42);
-        # 1.0 — небольшой отступ между параграфами (был 3.0).
-        total_pt += lines * size * 1.28 + 1.0
-    return int(total_pt * 12700)
+        # 1.42 — межстрочный интервал с запасом; 3.0 — отступ между параграфами.
+        total_pt += lines * size * 1.42 + 3.0
+    return int(total_pt * 12700) + Inches(0.06)
+
 
 
 # Расширенный параграф с явными интервалами (в pt):
@@ -322,17 +322,21 @@ def _estimate_block_height(paras_ext: list, width_emu: int) -> int:
     независимо от длины текста (устраняет «где-то есть отступ, где-то нет»).
     """
     width_pt = max(1.0, width_emu / 12700)
-    total_pt = 2.0  # поля фрейма
+    total_pt = 6.0  # поля фрейма (с запасом)
     for runs, _align, sb_pt, sa_pt in paras_ext:
         text = "".join(r[0] for r in runs) or ""
         size = max((r[2] for r in runs), default=SIZE_BODY)
-        char_pt = size * 0.50
+        # 0.72 — реальная ширина кириллицы (см. _estimate_height). Намеренно с
+        # запасом, чтобы текст НЕ вылезал за пределы фрейма.
+        char_pt = size * 0.72
         cpl = max(1, int(width_pt / char_pt))
         lines = 0
         for seg in (text.split("\n") if text else [""]):
             lines += max(1, -(-len(seg) // cpl))  # ceil
-        total_pt += sb_pt + lines * size * 1.28 + sa_pt
-    return int(total_pt * 12700)
+        total_pt += sb_pt + lines * size * 1.42 + sa_pt
+    # запас снизу, чтобы разделитель ниже не наезжал на последнюю строку
+    return int(total_pt * 12700) + Inches(0.08)
+
 
 
 # Интервалы для блока вопросов (pt): между вопросами и после заголовка.
@@ -557,10 +561,13 @@ class PptxService:
         # Заглавное лого — СТРОГО в начале страницы, на всю ширину (с сохранением
         # пропорций).
         deck.add_logo_top(IMG_LOGO_TOP, gap_after=Inches(0.15))
-        deck.add_image_fullwidth(IMG_SEP_CORNER, gap_after=Inches(0.25))
-
+        # Верхний разделитель тоже «обволакивает» профиль: профиль сверху ЗАХОДИТ
+        # внутрь separator_corner (отрицательный gap_after).
+        overlap = Inches(0.14)
+        deck.add_image_fullwidth(IMG_SEP_CORNER, gap_after=-overlap)
 
         self._add_profile(
+
             deck,
             shift_name=shift.name or "",
             shift_dates=_resolve_shift_dates(shift),
@@ -569,11 +576,11 @@ class PptxService:
             student_name=student.full_name or "",
         )
 
-        # Разделитель «обнимает» профиль И легенду: профиль сверху ЗАХОДИТ в
-        # линию (отрицательный gap_before), а заголовок ЛЕГЕНДЫ снизу — тоже
+        # Нижний разделитель «обнимает» профиль И легенду: профиль сверху ЗАХОДИТ
+        # в линию (отрицательный gap_before), а заголовок ЛЕГЕНДЫ снизу — тоже
         # (отрицательный gap_after). Так ФИО/департамент «влипают» в разделитель.
-        overlap = Inches(0.14)
         deck.add_image_fullwidth(IMG_SEP_LINE, gap_before=-overlap,
+
                                  gap_after=-overlap)
 
         # Легенда смены — заголовок ЧЁРНЫЙ (не в цвет департамента).
