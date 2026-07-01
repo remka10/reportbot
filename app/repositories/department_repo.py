@@ -1,8 +1,9 @@
 import logging
 from typing import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from app.database.models import (
     Department, TeacherDepartment, Shift, DEPARTMENTS, get_department_name,
@@ -115,12 +116,33 @@ class DepartmentRepository:
     async def update_context(
         self, teacher_id: int, department_id: int, context: str
     ) -> bool:
-        td = await self.session.get(
+        """Сохраняет контекст смены ОБЩИМ для всего департамента.
+
+        ВАЖНО (2026-07-02): контекст — это свойство ДЕПАРТАМЕНТА/СМЕНЫ, а не
+        приватная заметка одного педагога. Поэтому пишем один и тот же текст
+        во ВСЕ строки teacher_departments этого департамента (и в строку
+        текущего пользователя, создав её при необходимости). Так контекст,
+        введённый одним аккаунтом (напр. админом), виден всем остальным.
+        """
+        # Гарантируем, что строка текущего пользователя существует.
+        current = await self.session.get(
             TeacherDepartment,
             {"teacher_id": teacher_id, "department_id": department_id},
         )
-        if td is None:
-            return False
-        td.shift_context = context
+        if current is None:
+            current = TeacherDepartment(
+                teacher_id=teacher_id, department_id=department_id
+            )
+            self.session.add(current)
+            await self.session.flush()
+
+        # Обновляем контекст у ВСЕХ педагогов этого департамента.
+        await self.session.execute(
+            update(TeacherDepartment)
+            .where(TeacherDepartment.department_id == department_id)
+            .values(shift_context=context)
+        )
         await self.session.flush()
         return True
+
+

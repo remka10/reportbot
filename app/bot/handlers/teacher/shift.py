@@ -160,12 +160,20 @@ async def open_department(
     # Сохраняем выбранный департамент и его смену в FSM
     await state.update_data(department_id=department_id, shift_id=department.shift_id)
 
-    if teacher_dep.shift_context:
+    # Контекст ОБЩИЙ по департаменту: если у текущего аккаунта своей строки/
+    # контекста нет, берём любой непустой контекст, заполненный другим
+    # аккаунтом (напр. админом).
+    shared_context = (teacher_dep.shift_context or "") if teacher_dep else ""
+    if not shared_context:
+        shared_context = await dep_repo.get_any_context(department_id)
+
+    if shared_context:
         context_preview = (
-            teacher_dep.shift_context[:300] + "..."
-            if len(teacher_dep.shift_context) > 300
-            else teacher_dep.shift_context
+            shared_context[:300] + "..."
+            if len(shared_context) > 300
+            else shared_context
         )
+
         await callback.message.edit_text(
             f"📂 <b>{shift_name}</b>\n"
             f"🏢 {department.name}\n\n"
