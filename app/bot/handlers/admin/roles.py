@@ -290,19 +290,25 @@ async def add_user_role(cb: CallbackQuery, state: FSMContext, user: User) -> Non
 async def add_user_confirm(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    data = await state.get_data()
-    service = UserService(session)
-    result = await service.add_user(
-        actor=user,
-        new_user_id=data["new_user_id"],
-        full_name=data["full_name"],
-        role=UserRole(data["role"]),
-    )
-    await state.clear()
-    await cb.message.edit_text(
-        result.message,
-        reply_markup=back_keyboard("admin:users"),
-    )
+    try:
+        data = await state.get_data()
+        service = UserService(session)
+        result = await service.add_user(
+            actor=user,
+            new_user_id=data["new_user_id"],
+            full_name=data["full_name"],
+            role=UserRole(data["role"]),
+        )
+        await state.clear()
+        await cb.message.edit_text(
+            result.message,
+            reply_markup=back_keyboard("admin:users"),
+        )
+        await cb.answer()
+    except Exception as e:
+        logger.exception(f"Error in add_user_confirm: {e}")
+        await cb.answer("⚠️ Произошла ошибка. Попробуйте снова.", show_alert=True)
+
 
 
 # ---------------------------------------------------------------------------
@@ -376,16 +382,22 @@ async def change_role_user_selected(
 async def change_role_confirm(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    new_role = UserRole(cb.data.split(":")[1])
-    data = await state.get_data()
-    service = UserService(session)
-    result = await service.change_role(
-        actor=user,
-        target_user_id=data["target_user_id"],
-        new_role=new_role,
-    )
-    await state.clear()
-    await cb.message.edit_text(result.message, reply_markup=back_keyboard("admin:users"))
+    try:
+        new_role = UserRole(cb.data.split(":")[1])
+        data = await state.get_data()
+        service = UserService(session)
+        result = await service.change_role(
+            actor=user,
+            target_user_id=data["target_user_id"],
+            new_role=new_role,
+        )
+        await state.clear()
+        await cb.message.edit_text(result.message, reply_markup=back_keyboard("admin:users"))
+        await cb.answer()
+    except Exception as e:
+        logger.exception(f"Error in change_role_confirm: {e}")
+        await cb.answer("⚠️ Произошла ошибка. Попробуйте снова.", show_alert=True)
+
 
 
 # ---------------------------------------------------------------------------
@@ -430,8 +442,14 @@ async def deactivate_user_selected(
 async def deactivate_confirm(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    data = await state.get_data()
-    service = UserService(session)
-    result = await service.deactivate(actor=user, target_user_id=data["target_user_id"])
-    await state.clear()
-    await cb.message.edit_text(result.message, reply_markup=back_keyboard("admin:users"))
+    try:
+        data = await state.get_data()
+        service = UserService(session)
+        result = await service.deactivate(actor=user, target_user_id=data["target_user_id"])
+        await state.clear()
+        await cb.message.edit_text(result.message, reply_markup=back_keyboard("admin:users"))
+        await cb.answer()
+    except Exception as e:
+        logger.exception(f"Error in deactivate_confirm: {e}")
+        await cb.answer("⚠️ Произошла ошибка. Попробуйте снова.", show_alert=True)
+

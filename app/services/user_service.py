@@ -54,7 +54,6 @@ class UserService:
                 existing.is_active = True
                 existing.role = role
                 existing.full_name = full_name
-                existing.created_by = actor.id
                 return ServiceResult(
                     success=True,
                     message=f"✅ Пользователь <b>{full_name}</b> реактивирован "
@@ -65,8 +64,8 @@ class UserService:
             user_id=new_user_id,
             full_name=full_name,
             role=role,
-            created_by=actor.id,
         )
+
         return ServiceResult(
             success=True,
             message=f"✅ Пользователь <b>{full_name}</b> добавлен "
@@ -92,16 +91,18 @@ class UserService:
                 message="⚠️ Нельзя изменить собственную роль.",
             )
 
-        ok = await self.repo.update_role(target_user_id, new_role)
-        if not ok:
+        target = await self.repo.get_by_id(target_user_id)
+        if not target:
             return ServiceResult(
                 success=False,
                 message="⚠️ Пользователь не найден.",
             )
+        await self.repo.set_role(target_user_id, new_role)
         return ServiceResult(
             success=True,
             message=f"✅ Роль изменена на <b>{new_role.value}</b>.",
         )
+
 
     async def deactivate(
         self, actor: User, target_user_id: int
@@ -113,13 +114,15 @@ class UserService:
                 message="⚠️ Нельзя деактивировать самого себя.",
             )
 
-        ok = await self.repo.deactivate(target_user_id)
-        if not ok:
+        target = await self.repo.get_by_id(target_user_id)
+        if not target:
             return ServiceResult(
                 success=False,
                 message="⚠️ Пользователь не найден.",
             )
+        await self.repo.set_active(target_user_id, False)
         return ServiceResult(
             success=True,
             message="✅ Пользователь деактивирован.",
         )
+
