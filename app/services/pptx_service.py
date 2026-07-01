@@ -308,8 +308,41 @@ def _estimate_height(paragraphs: list, width_emu: int) -> int:
     return int(total_pt * 12700)
 
 
+# Расширенный параграф с явными интервалами (в pt):
+# (runs, align, space_before_pt, space_after_pt)
+ParaExt = tuple[list, "PP_ALIGN | None", float, float]
+
+
+def _estimate_block_height(paras_ext: list, width_emu: int) -> int:
+    """
+    Высота цельного блока (заголовок + пары «вопрос/ответ») в EMU с учётом
+    ЯВНЫХ интервалов space_before/space_after каждого параграфа. Так весь блок
+    рисуется в ОДНОМ текст-фрейме, а межстрочные и межвопросные отступы задаются
+    свойствами параграфов PowerPoint → расстояния между вопросами одинаковые
+    независимо от длины текста (устраняет «где-то есть отступ, где-то нет»).
+    """
+    width_pt = max(1.0, width_emu / 12700)
+    total_pt = 2.0  # поля фрейма
+    for runs, _align, sb_pt, sa_pt in paras_ext:
+        text = "".join(r[0] for r in runs) or ""
+        size = max((r[2] for r in runs), default=SIZE_BODY)
+        char_pt = size * 0.50
+        cpl = max(1, int(width_pt / char_pt))
+        lines = 0
+        for seg in (text.split("\n") if text else [""]):
+            lines += max(1, -(-len(seg) // cpl))  # ceil
+        total_pt += sb_pt + lines * size * 1.28 + sa_pt
+    return int(total_pt * 12700)
+
+
+# Интервалы для блока вопросов (pt): между вопросами и после заголовка.
+GAP_QUESTION_PT = 10.0   # отступ ПЕРЕД каждым вопросом (одинаковый для всех)
+GAP_ANSWER_PT = 1.0      # отступ между вопросом и его ответом
+GAP_HEADER_PT = 4.0      # отступ после заголовка блока
+
 
 class _Deck:
+
     """Управляет слайдами и «курсором» вертикальной укладки контента."""
 
     def __init__(self, prs: Presentation) -> None:
@@ -435,8 +468,44 @@ class _Deck:
                 r.font.color.rgb = rgb if rgb is not None else DARK
         self.y += est + gap_after
 
+    def add_flow_block(self, paras_ext: list, gap_before: int = 0,
+                       gap_after: int = 0) -> int:
+        """
+        Рисует ЦЕЛЬНЫЙ блок (заголовок + вопросы/ответы) одним текст-фреймом.
+        Интервалы между параграфами задаются через space_before/space_after (pt),
+        поэтому промежутки между вопросами получаются ОДИНАКОВЫМИ (PowerPoint сам
+        раскладывает параграфы, а не мы позиционируем каждый бокс по «на глаз»
+        оценённой высоте). Возвращает использованную высоту (EMU).
+        """
+        self.y += gap_before
+        est = _estimate_block_height(paras_ext, self.content_w)
+        box = self.slide.shapes.add_textbox(int(self.m_left), int(self.y),
+                                             int(self.content_w), int(est))
+        tf = box.text_frame
+        tf.word_wrap = True
+        try:
+            tf.auto_size = MSO_AUTO_SIZE.NONE
+        except Exception:
+            pass
+        for i, (runs, align, sb_pt, sa_pt) in enumerate(paras_ext):
+            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            if align is not None:
+                p.alignment = align
+            p.space_before = Pt(sb_pt)
+            p.space_after = Pt(sa_pt)
+            for text, bold, size, rgb in runs:
+                r = p.add_run()
+                r.text = text
+                r.font.name = FONT
+                r.font.bold = bold
+                r.font.size = Pt(size)
+                r.font.color.rgb = rgb if rgb is not None else DARK
+        self.y += est + gap_after
+        return est
+
 
 class PptxService:
+
     def __init__(self) -> None:
         self.reports_dir = Path(settings.reports_dir)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
@@ -500,11 +569,13 @@ class PptxService:
             student_name=student.full_name or "",
         )
 
-        # Разделитель «обнимает» текст так же, как в блоках вопросов:
-        # заголовок ЛЕГЕНДЫ чуть ЗАХОДИТ внутрь линии (отрицательный gap_after).
+        # Разделитель «обнимает» профиль И легенду: профиль сверху ЗАХОДИТ в
+        # линию (отрицательный gap_before), а заголовок ЛЕГЕНДЫ снизу — тоже
+        # (отрицательный gap_after). Так ФИО/департамент «влипают» в разделитель.
         overlap = Inches(0.14)
-        deck.add_image_fullwidth(IMG_SEP_LINE, gap_before=Inches(0.2),
+        deck.add_image_fullwidth(IMG_SEP_LINE, gap_before=-overlap,
                                  gap_after=-overlap)
+
         # Легенда смены — заголовок ЧЁРНЫЙ (не в цвет департамента).
         deck.add_paragraphs(
             [([("ЛЕГЕНДА СМЕНЫ", True, SIZE_BLOCK, DARK)], PP_ALIGN.LEFT)],
@@ -524,10 +595,14 @@ class PptxService:
 
         deck.new_page(with_arrow=True)
         deck.add_image_fullwidth(IMG_SEP_LINE, gap_after=-overlap)
+        last_idx = len(BLOCKS) - 1
         for b_idx, (block_title, q_nums) in enumerate(BLOCKS):
             self._add_block(deck, block_title, q_nums, answers, dep_rgb)
-            deck.add_image_fullwidth(IMG_SEP_LINE, gap_before=-overlap,
-                                     gap_after=-overlap)
+            # После ПОСЛЕДНЕГО блока разделитель НЕ ставим.
+            if b_idx != last_idx:
+                deck.add_image_fullwidth(IMG_SEP_LINE, gap_before=-overlap,
+                                         gap_after=-overlap)
+
 
 
 
@@ -636,34 +711,29 @@ class PptxService:
     # ── блок с вопросами ──────────────────────────────────────────────────
     def _add_block(self, deck: _Deck, block_title: str, q_nums: list[int],
                    answers: dict, dep_rgb: RGBColor) -> None:
+        """
+        Весь блок (заголовок + все пары «вопрос/ответ») рисуется ОДНИМ текст-
+        фреймом через deck.add_flow_block. Отступы между вопросами задаются
+        одинаковым space_before (GAP_QUESTION_PT), поэтому промежутки ровные.
+        """
+        paras: list = []
         # Заголовок блока — ЧЁРНЫЙ: имя блока полужирным, описание обычным.
-        header = [(_block_title_runs(block_title), PP_ALIGN.LEFT)]
-        header_h = _estimate_height(header, deck.content_w)
+        paras.append((_block_title_runs(block_title), PP_ALIGN.LEFT,
+                      0.0, GAP_HEADER_PT))
+        for qn in q_nums:
+            label = QUESTION_LABELS.get(qn, f"Вопрос {qn}")
+            answer = answers.get(qn) or answers.get(str(qn)) or "—"
+            # Вопрос — ПОЛУЖИРНЫМ, единый отступ сверху (равные промежутки).
+            paras.append(([(f"{qn}. {label}", True, SIZE_QUESTION, DARK)],
+                          PP_ALIGN.LEFT, GAP_QUESTION_PT, GAP_ANSWER_PT))
+            # Ответ педагога — обычным, вплотную к своему вопросу.
+            paras.append(([(str(answer), False, SIZE_BODY, DARK)],
+                          PP_ALIGN.LEFT, 0.0, 0.0))
 
-        first_q = q_nums[0]
-        first_paras = self._question_paras(first_q, answers)
-        first_h = _estimate_height(first_paras, deck.content_w)
+        est = _estimate_block_height(paras, deck.content_w)
+        deck.ensure(est)
+        deck.add_flow_block(paras)
 
-        deck.ensure(header_h + first_h + Inches(0.1))
-        deck.add_paragraphs(header, gap_after=Inches(0.05))
-
-        for i, qn in enumerate(q_nums):
-            paras = self._question_paras(qn, answers)
-            h = _estimate_height(paras, deck.content_w)
-            deck.ensure(h)
-            deck.add_paragraphs(paras, gap_after=Inches(0.08))
-
-
-    @staticmethod
-    def _question_paras(q_num: int, answers: dict) -> list:
-        # Вопрос — ПОЛУЖИРНЫМ («N. текст вопроса»), ответ педагога — обычным,
-        # того же размера (визуально не отличаются, кроме жирности).
-        label = QUESTION_LABELS.get(q_num, f"Вопрос {q_num}")
-        answer = answers.get(q_num) or answers.get(str(q_num)) or "—"
-        return [
-            ([(f"{q_num}. {label}", True, SIZE_QUESTION, DARK)], PP_ALIGN.LEFT),
-            ([(str(answer), False, SIZE_BODY, DARK)], PP_ALIGN.LEFT),
-        ]
 
     # ── конвертация в PDF (через LibreOffice/soffice) ──────────────────────
     def _to_pdf(self, pptx_path: Path) -> Path:
