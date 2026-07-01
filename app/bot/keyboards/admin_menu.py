@@ -1,6 +1,53 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    KeyboardButtonRequestUsers,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.database.models import Shift, User, UserRole, DEPARTMENTS, Department
+
+
+# request_id для кнопки выбора пользователя (KeyboardButtonRequestUsers).
+# Значение произвольное, используется Telegram для сопоставления запрос/ответ.
+REQUEST_USER_ID = 1
+
+
+def request_user_keyboard() -> ReplyKeyboardMarkup:
+    """
+    Reply-клавиатура с нативной кнопкой выбора пользователя Telegram.
+
+    В отличие от «пересылки контакта через скрепку» (которой в клиенте нет),
+    кнопка request_users открывает системный список пользователей Telegram и
+    возвращает НАСТОЯЩИЙ Telegram ID выбранного человека — даже если он ни разу
+    не писал боту. Ответ приходит в message.users_shared.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(
+                    text="👤 Выбрать пользователя",
+                    request_users=KeyboardButtonRequestUsers(
+                        request_id=REQUEST_USER_ID,
+                        user_is_bot=False,
+                        max_quantity=1,
+                    ),
+                )
+            ],
+            [KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="ID / @username или выберите пользователя кнопкой ниже",
+    )
+
+
+def remove_reply_keyboard() -> ReplyKeyboardRemove:
+    """Убрать reply-клавиатуру."""
+    return ReplyKeyboardRemove()
+
 
 
 

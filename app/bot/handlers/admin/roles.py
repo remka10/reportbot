@@ -8,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.admin_menu import (
     admin_main_menu, users_menu, roles_keyboard, users_list_keyboard,
-    back_keyboard, confirm_keyboard,
+    back_keyboard, confirm_keyboard, request_user_keyboard, remove_reply_keyboard,
 )
+
 from app.bot.states.admin_states import (
     AddUserStates, ChangeRoleStates, DeactivateUserStates,
 )
@@ -85,10 +86,51 @@ async def cb_add_user_start(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.message.edit_text(
         "➕ <b>Добавить пользователя</b>\n\n"
         "Отправьте одно из следующего:\n"
-        "• Числовой <b>Telegram ID</b> (узнать через @userinfobot)\n"
+        "• Числовой <b>Telegram ID</b> — подойдёт <u>любой</u> ID, даже если "
+        "пользователь ещё ни разу не писал боту (узнать ID можно через @userinfobot)\n"
         "• Ник в формате <b>@username</b>\n"
-        "• Перешлите <b>контакт</b> пользователя (через скрепку → Контакт)",
-        reply_markup=back_keyboard("admin:users"),
+        "• Нажмите кнопку <b>«👤 Выбрать пользователя»</b> ниже — откроется список "
+        "контактов Telegram, выберите нужного человека.",
+    )
+    # Reply-клавиатуру нельзя прикрепить к inline-сообщению (edit_text),
+    # поэтому отправляем её отдельным сообщением.
+    await cb.message.answer(
+        "👇 Выберите пользователя кнопкой или отправьте ID/@username сообщением:",
+        reply_markup=request_user_keyboard(),
+    )
+
+
+@router.message(AddUserStates.waiting_user_id, F.users_shared)
+async def add_user_shared(message: Message, state: FSMContext) -> None:
+    """
+    Обработка нативного выбора пользователя через кнопку request_users.
+    Возвращает реальный Telegram ID даже для тех, кто не писал боту.
+    """
+    shared = message.users_shared
+    # Bot API 7.2 переименовал user_ids → users (list[SharedUser]).
+    # Поддерживаем оба варианта, чтобы не зависеть от точной версии Bot API.
+    tg_id = None
+    if shared:
+        users = getattr(shared, "users", None)
+        if users:
+            tg_id = users[0].user_id
+        else:
+            user_ids = getattr(shared, "user_ids", None)
+            if user_ids:
+                tg_id = user_ids[0]
+    if not tg_id:
+        await message.answer(
+            "⚠️ Не удалось получить пользователя. Попробуйте ещё раз или введите ID.",
+            reply_markup=remove_reply_keyboard(),
+        )
+        return
+
+    await state.update_data(new_user_id=tg_id)
+    await state.set_state(AddUserStates.waiting_full_name)
+    await message.answer(
+        f"✅ Пользователь выбран. ID: <code>{tg_id}</code>\n\n"
+        "Введите <b>полное имя</b> пользователя (Фамилия Имя Отчество):",
+        reply_markup=remove_reply_keyboard(),
     )
 
 
@@ -96,17 +138,34 @@ async def cb_add_user_start(cb: CallbackQuery, state: FSMContext) -> None:
 async def add_user_id(message: Message, state: FSMContext, session: AsyncSession) -> None:
     """
     Принимает:
-    - числовой ID
-    - @username
+    - числовой ID (любой, даже если юзер не писал боту)
+    - @username или @<числовой id>
     - пересланный контакт (message.contact)
+    - «Отмена» с reply-клавиатуры
     """
+    text = (message.text or "").strip()
+
+    # Отмена с reply-клавиатуры
+    if text == "❌ Отмена":
+        await state.clear()
+        await message.answer(
+            "Добавление пользователя отменено.",
+            reply_markup=remove_reply_keyboard(),
+        )
+        await message.answer(
+            "👥 <b>Управление пользователями</b>",
+            reply_markup=users_menu(),
+        )
+        return
+
     # Вариант 1: пересланный контакт
     if message.contact:
         tg_id = message.contact.user_id
         if not tg_id:
             await message.answer(
                 "⚠️ Не удалось получить Telegram ID из контакта.\n"
-                "Попросите пользователя переслать контакт самостоятельно."
+                "Попросите пользователя переслать контакт самостоятельно, "
+                "или воспользуйтесь кнопкой «👤 Выбрать пользователя»."
             )
             return
         await state.update_data(new_user_id=tg_id)
@@ -120,50 +179,65 @@ async def add_user_id(message: Message, state: FSMContext, session: AsyncSession
             await message.answer(
                 f"✅ Контакт получен. ID: <code>{tg_id}</code>\n\n"
                 f"Введите <b>полное имя</b> пользователя (Фамилия Имя Отчество)\n"
-                f"или отправьте <b>.</b> чтобы использовать имя из контакта: <b>{contact_name}</b>"
+                f"или отправьте <b>.</b> чтобы использовать имя из контакта: <b>{contact_name}</b>",
+                reply_markup=remove_reply_keyboard(),
             )
         else:
             await message.answer(
                 f"✅ Контакт получен. ID: <code>{tg_id}</code>\n\n"
-                "Введите <b>полное имя</b> пользователя (Фамилия Имя Отчество):"
+                "Введите <b>полное имя</b> пользователя (Фамилия Имя Отчество):",
+                reply_markup=remove_reply_keyboard(),
             )
         return
 
-    text = (message.text or "").strip()
+    # Нормализуем: убираем ведущий @ — поддерживаем и @123456, и @username
+    normalized = text.lstrip("@").strip()
 
-    # Вариант 2: числовой ID
-    if text.isdigit():
-        await state.update_data(new_user_id=int(text))
+    # Вариант 2: числовой ID (в т.ч. вида @123456).
+    # Принимаем ЛЮБОЙ числовой ID, даже если пользователь не писал боту.
+    if normalized.isdigit():
+        await state.update_data(new_user_id=int(normalized))
         await state.set_state(AddUserStates.waiting_full_name)
-        await message.answer("Введите <b>полное имя</b> пользователя (Фамилия Имя Отчество):")
+        await message.answer(
+            "Введите <b>полное имя</b> пользователя (Фамилия Имя Отчество):",
+            reply_markup=remove_reply_keyboard(),
+        )
         return
 
-    # Вариант 3: @username
-    if text.startswith("@") or (text and not text.isdigit()):
-        username = text.lstrip("@")
+    # Вариант 3: @username (текстовый ник)
+    if normalized:
         repo = UserRepository(session)
-        found_user = await repo.get_by_username(username)
+        found_user = await repo.get_by_username(normalized)
         if found_user:
-            await state.update_data(new_user_id=found_user.id)
+            await state.update_data(new_user_id=found_user.id, prefilled_name=found_user.full_name)
             await state.set_state(AddUserStates.waiting_full_name)
             await message.answer(
-                f"✅ Найден пользователь <b>@{username}</b> (ID: <code>{found_user.id}</code>)\n\n"
+                f"✅ Найден пользователь <b>@{normalized}</b> (ID: <code>{found_user.id}</code>)\n\n"
                 "Введите <b>полное имя</b> (или отправьте <b>.</b> чтобы оставить текущее: "
-                f"<b>{found_user.full_name}</b>):"
+                f"<b>{found_user.full_name}</b>):",
+                reply_markup=remove_reply_keyboard(),
             )
-            await state.update_data(prefilled_name=found_user.full_name)
         else:
+            # По username бот не может узнать ID, если человек не писал боту —
+            # это ограничение Telegram. Предлагаем нативный выбор / числовой ID.
             await message.answer(
-                f"⚠️ Пользователь <b>@{username}</b> не найден в системе.\n\n"
-                "Пользователь должен сначала написать боту хотя бы раз, "
-                "чтобы попасть в базу.\n\n"
-                "Введите числовой <b>Telegram ID</b> или перешлите контакт:"
+                f"⚠️ Не удалось определить ID по нику <b>@{normalized}</b>.\n\n"
+                "Telegram не позволяет узнать ID по нику, если пользователь ещё "
+                "не писал боту.\n\n"
+                "Что можно сделать:\n"
+                "• нажмите кнопку <b>«👤 Выбрать пользователя»</b> ниже — сработает "
+                "для любого контакта;\n"
+                "• или отправьте числовой <b>Telegram ID</b> (узнать через @userinfobot).",
+                reply_markup=request_user_keyboard(),
             )
         return
 
     await message.answer(
-        "⚠️ Неверный формат. Введите числовой Telegram ID, @username или перешлите контакт."
+        "⚠️ Неверный формат. Отправьте числовой Telegram ID, @username, "
+        "перешлите контакт или воспользуйтесь кнопкой «👤 Выбрать пользователя».",
+        reply_markup=request_user_keyboard(),
     )
+
 
 
 @router.message(AddUserStates.waiting_full_name)
