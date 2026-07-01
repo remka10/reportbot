@@ -29,11 +29,16 @@ async def _resolve_shift_context(
         dep_repo = DepartmentRepository(session)
         td = await dep_repo.get_teacher_department(teacher_id, department_id)
         shift_context = (td.shift_context if td else "") or ""
+        # Фолбэк: контекст мог заполнить ДРУГОЙ аккаунт (напр. админ) —
+        # берём любой непустой контекст по этому департаменту.
+        if not shift_context:
+            shift_context = await dep_repo.get_any_context(department_id)
     if not shift_context:
         shift_repo = ShiftRepository(session)
         ts = await shift_repo.get_teacher_shift(teacher_id, shift_id)
         shift_context = (ts.shift_context if ts else "") or ""
     return shift_context
+
 
 
 async def _resolve_dep_number(

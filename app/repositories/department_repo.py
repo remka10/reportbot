@@ -94,6 +94,24 @@ class DepartmentRepository:
             {"teacher_id": teacher_id, "department_id": department_id},
         )
 
+    async def get_any_context(self, department_id: int) -> str:
+        """Любой непустой контекст смены по департаменту (без учёта teacher_id).
+
+        Нужно для экспорта: если отчёт заполнял один аккаунт (напр. админ), а
+        скачивает другой — «ЛЕГЕНДА СМЕНЫ» всё равно должна отрисоваться.
+        """
+        result = await self.session.execute(
+            select(TeacherDepartment.shift_context)
+            .where(
+                TeacherDepartment.department_id == department_id,
+                TeacherDepartment.shift_context.isnot(None),
+                TeacherDepartment.shift_context != "",
+            )
+            .limit(1)
+        )
+        return (result.scalars().first() or "")
+
+
     async def update_context(
         self, teacher_id: int, department_id: int, context: str
     ) -> bool:

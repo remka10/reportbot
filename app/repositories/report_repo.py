@@ -21,14 +21,14 @@ class ReportRepository:
     async def get_by_student(
         self, teacher_id: int, student_id: int, shift_id: int
     ) -> Report | None:
-        # ВНИМАНИЕ: исторически в БД могли появиться дубли отчётов на одну
-        # тройку (teacher, student, shift) — например, при повторной генерации.
-        # Поэтому НЕ используем scalar_one_or_none() (он падает с
-        # MultipleResultsFound), а берём самый свежий отчёт (по id DESC).
+        # ВАЖНО (2026-07-02): отчёты ОБЩИЕ по (student, shift) — teacher_id
+        # игнорируется, чтобы отчёт, сгенерированный одним аккаунтом (напр.
+        # админом), был виден и скачивался с любого другого аккаунта.
+        # Дубли на одну тройку могли накопиться исторически — берём самый
+        # свежий отчёт (по id DESC), поэтому не используем scalar_one_or_none().
         result = await self.session.execute(
             select(Report)
             .where(
-                Report.teacher_id == teacher_id,
                 Report.student_id == student_id,
                 Report.shift_id == shift_id,
             )
@@ -36,6 +36,7 @@ class ReportRepository:
             .limit(1)
         )
         return result.scalars().first()
+
 
     async def create(
         self,
@@ -112,11 +113,14 @@ class ReportRepository:
     async def get_finalized_student_ids(
         self, teacher_id: int, shift_id: int
     ) -> set[int]:
-        """Множество student_id с финализированными отчётами."""
+        """Множество student_id с финализированными отчётами по смене.
+
+        ОБЩЕЕ по смене (без учёта teacher_id) — прогресс и статус «готово»
+        одинаковы для всех аккаунтов.
+        """
         result = await self.session.execute(
             select(Report.student_id)
             .where(
-                Report.teacher_id == teacher_id,
                 Report.shift_id == shift_id,
                 Report.is_finalized == True,
             )
@@ -126,14 +130,28 @@ class ReportRepository:
     async def get_all_finalized(
         self, teacher_id: int, shift_id: int
     ) -> Sequence[Report]:
-        """Все финализированные отчёты педагога по смене."""
+        """Все финализированные отчёты по смене (ОБЩИЕ, без учёта teacher_id).
+
+        Так ZIP-выгрузка на любом аккаунте включает отчёты, сделанные другими
+        аккаунтами. Дубли по (student, shift) схлопываем — берём самый свежий.
+        """
         result = await self.session.execute(
             select(Report)
             .where(
-                Report.teacher_id == teacher_id,
                 Report.shift_id == shift_id,
                 Report.is_finalized == True,
             )
-            .order_by(Report.finalized_at)
+            .order_by(Report.student_id, Report.id.desc())
         )
-        return result.scalars().all()
+        reports = result.scalars().all()
+        # Оставляем по одному (самому свежему) отчёту на ребёнка.
+        seen: set[int] = set()
+        unique: list[Report] = []
+        for r in reports:
+            if r.student_id in seen:
+                continue
+            seen.add(r.student_id)
+            unique.append(r)
+        unique.sort(key=lambda r: (r.finalized_at or datetime.min.replace(tzinfo=timezone.utc)))
+        return unique
+

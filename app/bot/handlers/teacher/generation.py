@@ -82,10 +82,14 @@ async def cb_generate_report(
         if department_id:
             dep_repo = DepartmentRepository(session)
             td = await dep_repo.get_teacher_department(user.id, department_id)
-            shift_context = td.shift_context if td else ""
+            shift_context = (td.shift_context if td else "") or ""
+            # Фолбэк: контекст мог заполнить другой аккаунт по этому департаменту.
+            if not shift_context:
+                shift_context = await dep_repo.get_any_context(department_id)
         if not shift_context:
             ts = await shift_repo.get_teacher_shift(user.id, shift_id)
-            shift_context = ts.shift_context if ts else ""
+            shift_context = (ts.shift_context if ts else "") or ""
+
 
 
         llm = LLMService()
