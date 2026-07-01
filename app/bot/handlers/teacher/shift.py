@@ -317,6 +317,144 @@ async def redo_context_input(callback: CallbackQuery, state: FSMContext) -> None
     await callback.answer()
 
 
+@router.callback_query(
+    ShiftSelectStates.preview_context, F.data == "teacher:context:revise"
+)
+async def ask_revision_comment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Педагог хочет исправить оформленный контекст, оставив комментарий."""
+    await callback.message.edit_text(
+        "💬 <b>Что нужно исправить?</b>\n\n"
+        "Опишите, что именно поправить в контексте (например: "
+        "«убери про поход», «добавь, что дети победили в конкурсе», "
+        "«сделай короче»).\n\n"
+        "Можно написать текстом или отправить <b>голосовое сообщение</b>."
+    )
+    await state.set_state(ShiftSelectStates.revising_context)
+    await callback.answer()
+
+
+async def _revise_and_preview(
+    message: Message,
+    state: FSMContext,
+    comment: str,
+) -> None:
+    """
+    Отправляет ИИ прежний оформленный контекст + комментарий педагога,
+    показывает исправленный вариант с теми же кнопками превью.
+    """
+    data = await state.get_data()
+    previous = data.get("pending_context")
+    if not previous:
+        await message.answer("❌ Нет текущего контекста для правки. Введите заново.")
+        await state.set_state(ShiftSelectStates.entering_context)
+        return
+
+    processing_msg = await message.answer("✨ Вношу правки с помощью ИИ...")
+    try:
+        revised = await get_llm().revise_shift_context(previous, comment)
+    except Exception as e:
+        logger.error(f"LLM revise error: {e}", exc_info=True)
+        await processing_msg.delete()
+        await message.answer(
+            "⚠️ Не удалось внести правки через ИИ. Попробуйте ещё раз."
+        )
+        # Возвращаем педагога к превью прежнего варианта
+        await state.set_state(ShiftSelectStates.preview_context)
+        await message.answer(
+            "✨ <b>Текущий контекст смены:</b>\n\n"
+            f"<i>{previous}</i>",
+            reply_markup=context_preview_keyboard(),
+        )
+        return
+
+    await state.update_data(pending_context=revised)
+    await state.set_state(ShiftSelectStates.preview_context)
+    await processing_msg.delete()
+    await message.answer(
+        "✨ <b>Исправленный контекст смены:</b>\n\n"
+        f"<i>{revised}</i>\n\n"
+        "Сохранить, исправить ещё раз, переформулировать или ввести заново?",
+        reply_markup=context_preview_keyboard(),
+    )
+
+
+@router.message(ShiftSelectStates.revising_context, F.text)
+async def revise_context_text(message: Message, state: FSMContext) -> None:
+    """Педагог прислал текстовый комментарий для правки контекста."""
+    comment = (message.text or "").strip()
+    if not comment:
+        await message.answer("❌ Пустой комментарий. Опишите, что нужно исправить.")
+        return
+    await _revise_and_preview(message, state, comment)
+
+
+@router.message(ShiftSelectStates.revising_context, F.voice)
+async def revise_context_voice(message: Message, state: FSMContext) -> None:
+    """Педагог надиктовал комментарий для правки контекста голосом → STT → ИИ."""
+    processing_msg = await message.answer("⏳ Распознаю голосовое сообщение...")
+    try:
+        transcription = await get_stt().transcribe_voice(message.voice, message.bot)
+    except ValueError as e:
+        await processing_msg.delete()
+        await message.answer(f"❌ {e}")
+        return
+    except Exception as e:
+        logger.error(f"STT error in revise_context_voice: {e}", exc_info=True)
+        await processing_msg.delete()
+        await message.answer("❌ Не удалось распознать голосовое сообщение. Попробуйте ещё раз.")
+        return
+
+    await processing_msg.delete()
+    comment = transcription.strip()
+    if not comment:
+        await message.answer("❌ Не удалось распознать комментарий. Попробуйте ещё раз.")
+        return
+    await _revise_and_preview(message, state, comment)
+
+
+@router.callback_query(
+    ShiftSelectStates.preview_context, F.data == "teacher:context:manual"
+)
+async def start_manual_context(callback: CallbackQuery, state: FSMContext) -> None:
+    """Педагог хочет ввести/исправить контекст полностью вручную, без ИИ."""
+    data = await state.get_data()
+    current = data.get("pending_context", "")
+    text = (
+        "⌨️ <b>Ручной ввод контекста</b>\n\n"
+        "Отправьте <b>текстом</b> итоговый контекст смены — он будет "
+        "сохранён как есть, без обработки ИИ."
+    )
+    if current:
+        text += (
+            "\n\nТекущий вариант (можно скопировать и поправить):\n\n"
+            f"<code>{current}</code>"
+        )
+    await callback.message.edit_text(text)
+    await state.set_state(ShiftSelectStates.manual_context)
+    await callback.answer()
+
+
+@router.message(ShiftSelectStates.manual_context, F.text)
+async def save_manual_context(
+    message: Message, user: User, session: AsyncSession, state: FSMContext
+) -> None:
+    """Сохраняет введённый вручную контекст напрямую в БД, без ИИ."""
+    raw = (message.text or "").strip()
+    if not raw:
+        await message.answer("❌ Пустой контекст. Отправьте текст.")
+        return
+    try:
+        data = await state.get_data()
+        department_id = data["department_id"]
+        dep_repo = DepartmentRepository(session)
+        await dep_repo.update_context(user.id, department_id, raw)
+        await _show_children_message(message, user, session, state, department_id)
+    except Exception as e:
+        logger.exception(f"Error in save_manual_context: {e}")
+        await message.answer("⚠️ Не удалось сохранить контекст. Попробуйте ещё раз.")
+
+
+
 
 
 async def _build_children_view(

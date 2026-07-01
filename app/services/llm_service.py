@@ -73,7 +73,28 @@ SYSTEM_PROMPT_BEAUTIFY_CONTEXT = """
 - Верни ТОЛЬКО готовый текст контекста, без заголовков и пояснений.
 """
 
+SYSTEM_PROMPT_REVISE_CONTEXT = """
+Ты — редактор детского ролевого лагеря «Летово Игра».
+Ранее ты уже оформил контекст смены департамента. Теперь педагог прислал
+комментарий с тем, что нужно исправить или изменить в этом контексте.
+
+Твоя задача — вернуть ПОЛНЫЙ исправленный текст контекста смены с учётом
+комментария педагога, сохранив стилистику мира лагеря (ниже).
+
+О ЛАГЕРЕ (общий мир, всегда учитывай, но не пересказывай целиком):
+{camp_context}
+
+ТРЕБОВАНИЯ:
+- Учти ВСЕ пожелания из комментария педагога.
+- Сохрани факты и детали из прежнего текста, которые педагог не просил менять.
+- ЗАПРЕЩЕНО выдумывать события, которых не было и о которых не просил педагог.
+- Пиши литературным русским языком, тепло и живо, без канцелярита и штампов.
+- Объём: 1–2 связных абзаца (примерно 100–200 слов).
+- Верни ТОЛЬКО готовый исправленный текст контекста, без заголовков и пояснений.
+"""
+
 SYSTEM_PROMPT_STT_CLEAN = """
+
 Тебе дана транскрипция голосового сообщения педагога.
 Педагог мог сначала прочитать вслух текст вопроса, а затем дать ответ.
 
@@ -173,6 +194,43 @@ class LLMService:
         )
         text = response.choices[0].message.content or raw_context
         logger.info(f"Shift context beautified: {len(text)} chars out")
+        return text.strip()
+
+    async def revise_shift_context(
+        self,
+        previous_context: str,
+        comment: str,
+    ) -> str:
+        """
+        Исправляет ранее оформленный контекст смены с учётом комментария педагога
+        (что именно поправить), сохраняя стилистику мира «Летово Игра».
+        """
+        system_prompt = SYSTEM_PROMPT_REVISE_CONTEXT.format(
+            camp_context=CAMP_CONTEXT.strip(),
+        )
+        logger.info(
+            f"Revising shift context: prev={len(previous_context)} chars, "
+            f"comment={len(comment)} chars"
+        )
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        "Текущий вариант контекста смены:\n\n"
+                        f"{previous_context}\n\n"
+                        "Комментарий педагога — что нужно исправить:\n\n"
+                        f"{comment}"
+                    ),
+                },
+            ],
+            temperature=0.7,
+            max_tokens=1000,
+        )
+        text = response.choices[0].message.content or previous_context
+        logger.info(f"Shift context revised: {len(text)} chars out")
         return text.strip()
 
     async def revise_report(

@@ -69,12 +69,24 @@ def context_preview_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="💬 Исправить с комментарием",
+                    callback_data="teacher:context:revise",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="🔄 Переформулировать",
                     callback_data="teacher:context:regenerate",
                 ),
                 InlineKeyboardButton(
                     text="✏️ Ввести заново",
                     callback_data="teacher:context:redo",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⌨️ Ручной ввод (без ИИ)",
+                    callback_data="teacher:context:manual",
                 ),
             ],
         ]

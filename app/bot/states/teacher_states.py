@@ -6,6 +6,8 @@ class ShiftSelectStates(StatesGroup):
     confirm_context = State()
     entering_context = State()
     preview_context = State()  # ИИ оформил контекст — ждём подтверждения педагога
+    revising_context = State()  # ждём голосовой/текстовый комментарий для правки контекста
+    manual_context = State()  # ручной ввод контекста без ИИ (сохраняется как есть)
 
 
 
