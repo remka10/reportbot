@@ -289,18 +289,24 @@ Para = tuple[list, "PP_ALIGN | None"]
 def _estimate_height(paragraphs: list, width_emu: int) -> int:
     """Приблизительная высота набора параграфов (EMU). Намеренно с запасом."""
     width_pt = max(1.0, width_emu / 12700)
-    total_pt = 6.0  # внутренние поля фрейма
+    total_pt = 2.0  # внутренние поля фрейма (сведены к минимуму)
     for runs, _align in paragraphs:
         text = "".join(r[0] for r in runs) or ""
         size = max((r[2] for r in runs), default=SIZE_BODY)
-        char_pt = size * 0.52
+        # 0.50 — чуть плотнее упаковка символов в строку (было 0.52),
+        # т.е. считаем, что в строку влезает больше текста → меньше «фантомных»
+        # переносов и лишней высоты.
+        char_pt = size * 0.50
         cpl = max(1, int(width_pt / char_pt))
         segments = text.split("\n") if text else [""]
         lines = 0
         for seg in segments:
             lines += max(1, -(-len(seg) // cpl))  # ceil
-        total_pt += lines * size * 1.42 + 3.0
+        # 1.28 — реальный межстрочный интервал (был раздутый 1.42);
+        # 1.0 — небольшой отступ между параграфами (был 3.0).
+        total_pt += lines * size * 1.28 + 1.0
     return int(total_pt * 12700)
+
 
 
 class _Deck:
@@ -494,12 +500,15 @@ class PptxService:
             student_name=student.full_name or "",
         )
 
+        # Разделитель «обнимает» текст так же, как в блоках вопросов:
+        # заголовок ЛЕГЕНДЫ чуть ЗАХОДИТ внутрь линии (отрицательный gap_after).
+        overlap = Inches(0.14)
         deck.add_image_fullwidth(IMG_SEP_LINE, gap_before=Inches(0.2),
-                                 gap_after=Inches(0.2))
+                                 gap_after=-overlap)
         # Легенда смены — заголовок ЧЁРНЫЙ (не в цвет департамента).
         deck.add_paragraphs(
             [([("ЛЕГЕНДА СМЕНЫ", True, SIZE_BLOCK, DARK)], PP_ALIGN.LEFT)],
-            gap_after=Inches(0.05),
+            gap_after=Inches(0.02),
         )
 
         deck.add_paragraphs(
@@ -512,7 +521,7 @@ class PptxService:
         # контент чуть ЗАХОДИТ внутрь картинки разделителя (отрицательный
         # перехлёст OVERLAP), но не по центру — только слегка. Так линия сверху
         # и снизу как бы обнимают блок.
-        overlap = Inches(0.14)
+
         deck.new_page(with_arrow=True)
         deck.add_image_fullwidth(IMG_SEP_LINE, gap_after=-overlap)
         for b_idx, (block_title, q_nums) in enumerate(BLOCKS):
@@ -524,18 +533,21 @@ class PptxService:
 
         # ── ПОСЛЕДНЯЯ СТРАНИЦА (без стрелки) ──────────────────────────────
         deck.new_page(with_arrow=False)
-        deck.add_image_fullwidth(IMG_SEP_FIRST_LAST, gap_after=Inches(0.25))
+        # Заголовок «ОБЩЕЕ ЗАКЛЮЧЕНИЕ» так же «обволакивается» разделителями:
+        # чуть заходит внутрь верхнего (first_last) и нижнего (last) разделителя.
+        deck.add_image_fullwidth(IMG_SEP_FIRST_LAST, gap_after=-overlap)
         # Заголовок «ОБЩЕЕ ЗАКЛЮЧЕНИЕ» — ЧЁРНЫЙ (не в цвет департамента).
         deck.add_paragraphs(
             [([("ОБЩЕЕ ЗАКЛЮЧЕНИЕ ПЕДАГОГА", True, SIZE_BLOCK, DARK)], PP_ALIGN.LEFT)],
-            gap_after=Inches(0.05),
+            gap_after=Inches(0.02),
         )
         deck.add_paragraphs(
             [([((final_report or "—"), False, SIZE_BODY, DARK)], PP_ALIGN.LEFT)],
-            gap_after=Inches(0.2),
+            gap_after=-overlap,
         )
-        deck.add_image_fullwidth(IMG_SEP_LAST, gap_before=Inches(0.1),
+        deck.add_image_fullwidth(IMG_SEP_LAST, gap_before=0,
                                  gap_after=Inches(0.2))
+
         # Финальное лого — СТРОГО у нижнего края страницы, на всю ширину
         # (с сохранением пропорций).
         deck.add_logo_bottom(IMG_LOGO_BOTTOM)
@@ -632,14 +644,15 @@ class PptxService:
         first_paras = self._question_paras(first_q, answers)
         first_h = _estimate_height(first_paras, deck.content_w)
 
-        deck.ensure(header_h + first_h + Inches(0.15))
-        deck.add_paragraphs(header, gap_after=Inches(0.08))
+        deck.ensure(header_h + first_h + Inches(0.1))
+        deck.add_paragraphs(header, gap_after=Inches(0.05))
 
         for i, qn in enumerate(q_nums):
             paras = self._question_paras(qn, answers)
             h = _estimate_height(paras, deck.content_w)
             deck.ensure(h)
-            deck.add_paragraphs(paras, gap_after=Inches(0.12))
+            deck.add_paragraphs(paras, gap_after=Inches(0.08))
+
 
     @staticmethod
     def _question_paras(q_num: int, answers: dict) -> list:
