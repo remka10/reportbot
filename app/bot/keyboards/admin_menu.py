@@ -58,6 +58,8 @@ def admin_main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🏕 Смены",        callback_data="admin:shifts")],
         [InlineKeyboardButton(text="👦 Учащиеся",     callback_data="admin:students")],
         [InlineKeyboardButton(text="📝 Заполнить отчёты", callback_data="admin:fill")],
+        [InlineKeyboardButton(text="📥 Скачать отчёты", callback_data="export:menu")],
+        [InlineKeyboardButton(text="📦 Скачать все отчёты", callback_data="export:all")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

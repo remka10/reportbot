@@ -9,11 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.keyboards.main_menu import (
     export_menu,
     export_mode_menu,
+    export_all_mode_menu,
     export_departments_keyboard,
     export_format_keyboard,
     export_children_keyboard,
 )
-from app.database.models import User
+from app.database.models import User, UserRole
 
 from app.repositories.department_repo import DepartmentRepository
 from app.repositories.report_repo import ReportRepository
@@ -78,11 +79,26 @@ async def cb_export_menu(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-async def _teacher_departments(session: AsyncSession, teacher_id: int):
-    """Список департаментов педагога + карта shift_id -> название смены."""
+@router.callback_query(F.data == "export:all")
+async def cb_export_all_menu(cb: CallbackQuery, state: FSMContext) -> None:
+    """Быстрый вход в массовую выгрузку ZIP всех отчётов по смене."""
+    await state.update_data(export_mode="shift")
+    await cb.message.edit_text(
+        "📦 <b>Скачать все отчёты</b>\n\n"
+        "Выберите формат массовой выгрузки:",
+        reply_markup=export_all_mode_menu(),
+    )
+    await cb.answer()
+
+
+async def _available_departments(session: AsyncSession, user: User):
+    """Список доступных департаментов + карта shift_id -> название смены."""
     dep_repo = DepartmentRepository(session)
     shift_repo = ShiftRepository(session)
-    departments = list(await dep_repo.get_for_teacher(teacher_id))
+    if user.role == UserRole.admin:
+        departments = list(await dep_repo.get_all_active())
+    else:
+        departments = list(await dep_repo.get_for_teacher(user.id))
     shift_name_map: dict[int, str] = {}
     for d in departments:
         if d.shift_id not in shift_name_map:
@@ -91,18 +107,22 @@ async def _teacher_departments(session: AsyncSession, teacher_id: int):
     return departments, shift_name_map
 
 
-@router.callback_query(F.data.in_({"export:mode:shift", "export:mode:child"}))
+@router.callback_query(F.data.in_({"export:mode:shift", "export:mode:shift_pdf", "export:mode:child"}))
 async def cb_export_mode(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
     """Выбран режим экспорта → просим выбрать департамент/смену."""
     mode = cb.data.split(":")[-1]  # 'shift' | 'child'
-    await state.update_data(export_mode=mode)
+    export_mode = "shift" if mode == "shift_pdf" else mode
+    await state.update_data(
+        export_mode=export_mode,
+        export_force_pdf=(mode == "shift_pdf"),
+    )
 
-    departments, shift_name_map = await _teacher_departments(session, user.id)
+    departments, shift_name_map = await _available_departments(session, user)
     if not departments:
         await cb.message.edit_text(
-            "📭 У вас нет привязанных департаментов. Обратитесь к администратору.",
+            "📭 Нет доступных департаментов для выгрузки.",
             reply_markup=export_mode_menu(),
         )
         await cb.answer()
@@ -112,6 +132,8 @@ async def cb_export_mode(
         "📦 <b>Отчёты всей смены</b>" if mode == "shift"
         else "👤 <b>Отчёт одного ребёнка</b>"
     )
+    if mode == "shift_pdf":
+        title = "📦 <b>Все отчёты в ZIP PDF</b>"
     await cb.message.edit_text(
         f"{title}\n\nВыберите департамент:",
         reply_markup=export_departments_keyboard(departments, shift_name_map),
@@ -138,10 +160,14 @@ async def cb_export_dep(
     mode = data.get("export_mode", "shift")
 
     if mode == "shift":
+        data = await state.get_data()
+        if data.get("export_force_pdf"):
+            await _export_zip(cb, state, user, session, as_pdf=True)
+            return
         await cb.message.edit_text(
             f"📦 <b>Отчёты всей смены</b>\n🏢 {department.name}\n\n"
             "Выберите формат файла:",
-            reply_markup=export_format_keyboard("shift"),
+            reply_markup=export_format_keyboard("shift", back_callback="export:all"),
         )
         await cb.answer()
         return
@@ -213,7 +239,7 @@ async def cb_export_child_selected(
     await state.update_data(student_id=student_id)
     await cb.message.edit_text(
         "👤 <b>Отчёт одного ребёнка</b>\n\nВыберите формат файла:",
-        reply_markup=export_format_keyboard("child"),
+        reply_markup=export_format_keyboard("child", back_callback="export:menu"),
     )
     await cb.answer()
 

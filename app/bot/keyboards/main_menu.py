@@ -21,6 +21,12 @@ def teacher_main_menu() -> InlineKeyboardMarkup:
                     callback_data="export:menu",
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="📦 Скачать все отчёты",
+                    callback_data="export:all",
+                )
+            ],
         ]
     )
 
@@ -43,6 +49,10 @@ def after_finalize_menu(done: int, total: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="📥 Скачать отчёты",
                     callback_data="export:menu",
+                ),
+                InlineKeyboardButton(
+                    text="📦 Все отчёты",
+                    callback_data="export:all",
                 ),
             ],
         ]
@@ -103,6 +113,33 @@ def export_mode_menu() -> InlineKeyboardMarkup:
                     callback_data="export:mode:child",
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="📦 Скачать все отчёты сразу",
+                    callback_data="export:all",
+                )
+            ],
+        ]
+    )
+
+
+def export_all_mode_menu() -> InlineKeyboardMarkup:
+    """Быстрый вход в массовую выгрузку: сразу выбираем департамент для ZIP."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📦 ZIP PPTX по смене",
+                    callback_data="export:mode:shift",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📦 ZIP PDF по смене",
+                    callback_data="export:mode:shift_pdf",
+                )
+            ],
+            [InlineKeyboardButton(text="← Назад", callback_data="export:menu")],
         ]
     )
 
@@ -123,7 +160,7 @@ def export_departments_keyboard(
     return builder.as_markup()
 
 
-def export_format_keyboard(scope: str) -> InlineKeyboardMarkup:
+def export_format_keyboard(scope: str, back_callback: str = "export:menu") -> InlineKeyboardMarkup:
     """Выбор формата файла. scope: 'shift' (ZIP всей смены) или 'child' (один ребёнок)."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -135,7 +172,7 @@ def export_format_keyboard(scope: str) -> InlineKeyboardMarkup:
                     text="📕 PDF", callback_data=f"export:{scope}_fmt:pdf"
                 ),
             ],
-            [InlineKeyboardButton(text="← Назад", callback_data="export:menu")],
+            [InlineKeyboardButton(text="← Назад", callback_data=back_callback)],
         ]
     )
 
@@ -176,6 +213,7 @@ def export_children_keyboard(
 
     builder.row(InlineKeyboardButton(text="← Назад", callback_data="export:menu"))
     return builder.as_markup()
+
 
 
 
