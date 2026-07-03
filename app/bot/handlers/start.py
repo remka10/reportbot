@@ -77,12 +77,12 @@ async def _start_teacher(
 
 
 async def _start_admin(message: Message, user: User) -> None:
-    """Главное меню для admin/moderator."""
+    """Главное меню для admin."""
     role_labels = {
         UserRole.admin: "👑 Администратор",
-        UserRole.moderator: "🛡 Модератор",
     }
     role_label = role_labels.get(user.role, user.role.value)
+
     text = (
         f"👋 Привет, <b>{user.full_name}</b>!\n"
         f"Роль: {role_label}\n\n"

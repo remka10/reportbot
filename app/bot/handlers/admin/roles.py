@@ -23,11 +23,12 @@ router = Router(name="admin_roles")
 
 
 # ---------------------------------------------------------------------------
-# Фильтр: только admin и moderator
+# Фильтр: только admin (роль moderator удалена 2026-07-03)
 # ---------------------------------------------------------------------------
 
 def admin_or_mod(user: User) -> bool:
-    return user.role in (UserRole.admin, UserRole.moderator)
+    return user.role == UserRole.admin
+
 
 
 # ---------------------------------------------------------------------------

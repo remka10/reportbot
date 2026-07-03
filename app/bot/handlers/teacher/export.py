@@ -6,8 +6,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, FSInputFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.keyboards.main_menu import export_menu
+from app.bot.keyboards.main_menu import (
+    export_menu,
+    export_mode_menu,
+    export_departments_keyboard,
+    export_format_keyboard,
+    export_children_keyboard,
+)
 from app.database.models import User
+
 from app.repositories.department_repo import DepartmentRepository
 from app.repositories.report_repo import ReportRepository
 from app.repositories.shift_repo import ShiftRepository
@@ -62,12 +69,172 @@ async def _resolve_dep_number(
 
 @router.callback_query(F.data == "export:menu")
 async def cb_export_menu(cb: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    student_name = data.get("student_name", "—")
+    """Первый шаг скачивания: выбрать что скачать — всю смену или одного ребёнка."""
     await cb.message.edit_text(
-        f"📥 <b>Экспорт отчётов</b>\n\nТекущий ребёнок: <b>{student_name}</b>",
-        reply_markup=export_menu(),
+        "📥 <b>Скачать отчёты</b>\n\n"
+        "Что вы хотите скачать?",
+        reply_markup=export_mode_menu(),
     )
+    await cb.answer()
+
+
+async def _teacher_departments(session: AsyncSession, teacher_id: int):
+    """Список департаментов педагога + карта shift_id -> название смены."""
+    dep_repo = DepartmentRepository(session)
+    shift_repo = ShiftRepository(session)
+    departments = list(await dep_repo.get_for_teacher(teacher_id))
+    shift_name_map: dict[int, str] = {}
+    for d in departments:
+        if d.shift_id not in shift_name_map:
+            shift = await shift_repo.get_by_id(d.shift_id)
+            shift_name_map[d.shift_id] = shift.name if shift else f"Смена {d.shift_id}"
+    return departments, shift_name_map
+
+
+@router.callback_query(F.data.in_({"export:mode:shift", "export:mode:child"}))
+async def cb_export_mode(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Выбран режим экспорта → просим выбрать департамент/смену."""
+    mode = cb.data.split(":")[-1]  # 'shift' | 'child'
+    await state.update_data(export_mode=mode)
+
+    departments, shift_name_map = await _teacher_departments(session, user.id)
+    if not departments:
+        await cb.message.edit_text(
+            "📭 У вас нет привязанных департаментов. Обратитесь к администратору.",
+            reply_markup=export_mode_menu(),
+        )
+        await cb.answer()
+        return
+
+    title = (
+        "📦 <b>Отчёты всей смены</b>" if mode == "shift"
+        else "👤 <b>Отчёт одного ребёнка</b>"
+    )
+    await cb.message.edit_text(
+        f"{title}\n\nВыберите департамент:",
+        reply_markup=export_departments_keyboard(departments, shift_name_map),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("export:dep:"))
+async def cb_export_dep(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Выбран департамент → в зависимости от режима: формат (смена) или список детей."""
+    department_id = int(cb.data.split(":")[-1])
+    dep_repo = DepartmentRepository(session)
+    department = await dep_repo.get_by_id(department_id)
+    if department is None:
+        await cb.answer("❌ Департамент не найден", show_alert=True)
+        return
+
+    await state.update_data(
+        department_id=department_id, shift_id=department.shift_id
+    )
+    data = await state.get_data()
+    mode = data.get("export_mode", "shift")
+
+    if mode == "shift":
+        await cb.message.edit_text(
+            f"📦 <b>Отчёты всей смены</b>\n🏢 {department.name}\n\n"
+            "Выберите формат файла:",
+            reply_markup=export_format_keyboard("shift"),
+        )
+        await cb.answer()
+        return
+
+    # mode == child: показываем список детей с готовыми отчётами
+    await _show_export_children(cb, state, user, session, department_id, page=0)
+
+
+async def _show_export_children(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession,
+    department_id: int, page: int,
+) -> None:
+    """Показывает постраничный список детей департамента с финализированными отчётами."""
+    student_repo = StudentRepository(session)
+    report_repo = ReportRepository(session)
+    dep_repo = DepartmentRepository(session)
+
+    department = await dep_repo.get_by_id(department_id)
+    shift_id = department.shift_id if department else None
+
+    students = list(await student_repo.get_by_department(department_id))
+    finalized_ids = await report_repo.get_finalized_student_ids(user.id, shift_id)
+    ready = [s for s in students if s.id in finalized_ids]
+
+    if not ready:
+        await cb.message.edit_text(
+            "📭 В этом департаменте нет готовых (финализированных) отчётов.",
+            reply_markup=export_mode_menu(),
+        )
+        await cb.answer()
+        return
+
+    await state.update_data(export_child_page=page)
+    await cb.message.edit_text(
+        "👤 <b>Отчёт одного ребёнка</b>\n\n"
+        "Выберите ребёнка (показаны только готовые отчёты):",
+        reply_markup=export_children_keyboard(ready, page=page),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("export:child_page:"))
+async def cb_export_child_page(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Постраничная навигация по списку детей для экспорта."""
+    raw = cb.data.split(":")[-1]
+    if raw == "noop":
+        await cb.answer()
+        return
+    data = await state.get_data()
+    department_id = data.get("department_id")
+    if not department_id:
+        await cb.answer("❌ Сессия истекла. Начните заново.", show_alert=True)
+        return
+    try:
+        page = int(raw)
+    except ValueError:
+        page = 0
+    await _show_export_children(cb, state, user, session, department_id, page=page)
+
+
+@router.callback_query(F.data.startswith("export:child:"))
+async def cb_export_child_selected(
+    cb: CallbackQuery, state: FSMContext
+) -> None:
+    """Выбран ребёнок → просим выбрать формат файла."""
+    student_id = int(cb.data.split(":")[-1])
+    await state.update_data(student_id=student_id)
+    await cb.message.edit_text(
+        "👤 <b>Отчёт одного ребёнка</b>\n\nВыберите формат файла:",
+        reply_markup=export_format_keyboard("child"),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("export:child_fmt:"))
+async def cb_export_child_format(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Формат выбран для одного ребёнка → генерируем файл."""
+    as_pdf = cb.data.split(":")[-1] == "pdf"
+    await _export_single(cb, state, user, session, as_pdf=as_pdf)
+
+
+@router.callback_query(F.data.startswith("export:shift_fmt:"))
+async def cb_export_shift_format(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Формат выбран для всей смены → собираем ZIP."""
+    as_pdf = cb.data.split(":")[-1] == "pdf"
+    await _export_zip(cb, state, user, session, as_pdf=as_pdf)
+
 
 
 # ---------------------------------------------------------------------------

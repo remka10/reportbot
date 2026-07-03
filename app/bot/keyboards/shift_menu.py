@@ -36,21 +36,28 @@ def departments_keyboard(
 
 
 def context_exists_keyboard() -> InlineKeyboardMarkup:
-    """Кнопки при наличии существующего контекста департамента."""
+    """Кнопки при наличии существующего контекста департамента.
+
+    По требованию: если контекст смены уже введён, кнопка его изменения
+    отображается ОТДЕЛЬНОЙ строкой (а не в одном ряду с «Использовать»).
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="✅ Использовать",
+                    text="✅ Использовать сохранённый контекст",
                     callback_data="teacher:context:use",
                 ),
+            ],
+            [
                 InlineKeyboardButton(
-                    text="✏️ Изменить",
+                    text="✏️ Изменить контекст смены",
                     callback_data="teacher:context:change",
                 ),
-            ]
+            ],
         ]
     )
+
 
 
 def context_preview_keyboard() -> InlineKeyboardMarkup:

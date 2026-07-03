@@ -25,8 +25,9 @@ router = Router(name="admin_students")
 
 @router.callback_query(F.data == "admin:students")
 async def cb_students_menu(cb: CallbackQuery, user: User) -> None:
-    if user.role not in (UserRole.admin, UserRole.moderator):
+    if user.role != UserRole.admin:
         await cb.answer("Нет доступа", show_alert=True)
+
         return
     await cb.message.edit_text("👦 <b>Управление учащимися</b>", reply_markup=students_menu())
 

@@ -4,20 +4,41 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.database.models import Student
 
 
+# Кол-во детей на одной странице списка (постраничная навигация).
+CHILDREN_PAGE_SIZE = 8
+
+
+def paginate(total: int, page: int, page_size: int = CHILDREN_PAGE_SIZE) -> tuple[int, int, int]:
+    """Возвращает (page, total_pages, start_index) с нормализацией номера страницы."""
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    return page, total_pages, page * page_size
+
+
 def children_keyboard(
     students: list[Student],
     progress_map: dict[int, int],   # student_id -> кол-во отвеченных вопросов
     finalized_ids: set[int],         # student_id финализированных отчётов
     total_questions: int = 19,
+    page: int = 0,
+    page_size: int = CHILDREN_PAGE_SIZE,
+    show_context_button: bool = True,
 ) -> InlineKeyboardMarkup:
     """
-    Список детей с прогресс-индикатором.
+    Список детей с прогресс-индикатором и ПОСТРАНИЧНОЙ навигацией.
     ✅ = отчёт финализирован
     ⏳ = есть ответы, но не финализирован
     ⬜ = не начат
+
+    При большом количестве детей показывается только срез (page_size детей на
+    страницу) + строка навигации «⬅️ / N/M / ➡️».
     """
     builder = InlineKeyboardBuilder()
-    for student in students:
+
+    page, total_pages, start = paginate(len(students), page, page_size)
+    page_students = students[start:start + page_size]
+
+    for student in page_students:
         answered = progress_map.get(student.id, 0)
         if student.id in finalized_ids:
             icon = "✅"
@@ -31,7 +52,40 @@ def children_keyboard(
             callback_data=f"teacher:child:{student.id}",
         )
     builder.adjust(1)
+
+    # Строка постраничной навигации (только если страниц больше одной).
+    if total_pages > 1:
+        nav_row = []
+        if page > 0:
+            nav_row.append(
+                InlineKeyboardButton(
+                    text="⬅️", callback_data=f"teacher:child_page:{page - 1}"
+                )
+            )
+        nav_row.append(
+            InlineKeyboardButton(
+                text=f"{page + 1}/{total_pages}", callback_data="teacher:child_page:noop"
+            )
+        )
+        if page < total_pages - 1:
+            nav_row.append(
+                InlineKeyboardButton(
+                    text="➡️", callback_data=f"teacher:child_page:{page + 1}"
+                )
+            )
+        builder.row(*nav_row)
+
+    # Отдельная кнопка изменения контекста смены (по требованию — отдельно).
+    if show_context_button:
+        builder.row(
+            InlineKeyboardButton(
+                text="✏️ Изменить контекст смены",
+                callback_data="teacher:context:edit",
+            )
+        )
+
     return builder.as_markup()
+
 
 
 def question_keyboard(

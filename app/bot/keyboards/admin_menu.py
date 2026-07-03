@@ -66,7 +66,8 @@ def admin_main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
 def users_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     """Меню управления пользователями."""
     rows = [
-        [InlineKeyboardButton(text="➕ Добавить педагога/модератора", callback_data="admin:users:add")],
+        [InlineKeyboardButton(text="➕ Добавить пользователя", callback_data="admin:users:add")],
+
         [InlineKeyboardButton(text="👁 Список педагогов",             callback_data="admin:users:list")],
     ]
     if is_admin:
@@ -172,10 +173,10 @@ def roles_keyboard(exclude_role: UserRole | None = None) -> InlineKeyboardMarkup
             continue
         labels = {
             UserRole.admin:     "👑 Администратор",
-            UserRole.moderator: "🛡 Модератор",
             UserRole.teacher:   "👨‍🏫 Педагог",
         }
         builder.button(text=labels[role], callback_data=f"role:{role.value}")
+
     builder.adjust(1)
     return builder.as_markup()
 

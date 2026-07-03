@@ -29,7 +29,9 @@ router = Router(name="admin_fill")
 
 
 def _is_admin_or_mod(user: User) -> bool:
-    return user.role in (UserRole.admin, UserRole.moderator)
+    # Роль moderator удалена (2026-07-03) — доступ только у администратора.
+    return user.role == UserRole.admin
+
 
 
 @router.callback_query(F.data == "admin:fill")

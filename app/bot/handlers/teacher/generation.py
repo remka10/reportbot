@@ -6,7 +6,8 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.child_menu import report_review_keyboard, generate_report_keyboard
-from app.bot.keyboards.main_menu import after_finalize_menu, export_menu
+from app.bot.keyboards.main_menu import after_finalize_menu, export_mode_menu
+
 from app.bot.states.teacher_states import GenerationStates, QuestionStates
 from app.database.models import User, DialogRole
 from app.repositories.answer_repo import AnswerRepository
@@ -385,11 +386,12 @@ async def cb_teacher_export_redirect(
     """
     Редирект из контекста генерации в меню экспорта.
     Используется кнопкой after_finalize_menu → "📥 Скачать отчёты".
-    Настоящий экспорт обрабатывает export.py (export:single, export:zip).
+    Настоящий экспорт обрабатывает export.py (пошаговый флоу: смена/ребёнок → формат).
     """
-    data = await state.get_data()
-    student_name = data.get("student_name", "—")
     await cb.message.edit_text(
-        f"📥 <b>Экспорт отчётов</b>\n\nТекущий ребёнок: <b>{student_name}</b>",
-        reply_markup=export_menu(),
+        "📥 <b>Скачать отчёты</b>\n\nЧто вы хотите скачать?",
+        reply_markup=export_mode_menu(),
     )
+    await cb.answer()
+
+

@@ -15,9 +15,13 @@ from app.database.base import Base
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
 class UserRole(str, enum.Enum):
+    # Роль «moderator» удалена (2026-07-03). В системе только admin и teacher.
+    # Значение остаётся в PG-enum user_role как неиспользуемое (миграция 0004
+    # переводит бывших модераторов в teacher) — удаление значения enum в
+    # Postgres небезопасно, поэтому просто не используем его в коде.
     admin     = "admin"
-    moderator = "moderator"
     teacher   = "teacher"
+
 
 
 class DialogRole(str, enum.Enum):

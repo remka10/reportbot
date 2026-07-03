@@ -30,17 +30,18 @@ class UserService:
     ) -> ServiceResult:
         """
         Добавить нового пользователя.
-        Модератор может добавить только teacher.
-        Администратор — любую роль.
+        Добавлять пользователей может только администратор (роль moderator
+        удалена 2026-07-03).
         """
         # Проверка прав
-        if actor.role == UserRole.moderator and role != UserRole.teacher:
+        if actor.role != UserRole.admin:
             return ServiceResult(
                 success=False,
-                message="⚠️ Модератор может добавлять только педагогов.",
+                message="⚠️ Добавлять пользователей может только администратор.",
             )
 
         # Проверяем — не существует ли уже
+
         existing = await self.repo.get_by_id(new_user_id)
         if existing:
             if existing.is_active:

@@ -1,6 +1,9 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from app.bot.keyboards.child_menu import CHILDREN_PAGE_SIZE, paginate
+
+
 
 def teacher_main_menu() -> InlineKeyboardMarkup:
     """Главное меню педагога."""
@@ -47,7 +50,11 @@ def after_finalize_menu(done: int, total: int) -> InlineKeyboardMarkup:
 
 
 def export_menu() -> InlineKeyboardMarkup:
-    """Меню экспорта отчётов."""
+    """LEGACY-меню экспорта (быстрые кнопки для «текущего» ребёнка/смены из state).
+
+    Оставлено для обратной совместимости — используется в некоторых
+    промежуточных сообщениях. Новый пошаговый флоу — см. export_mode_menu().
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -78,5 +85,97 @@ def export_menu() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def export_mode_menu() -> InlineKeyboardMarkup:
+    """Первый шаг скачивания: выбрать что скачать — всю смену или одного ребёнка."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📦 Отчёты всей смены",
+                    callback_data="export:mode:shift",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👤 Отчёт одного ребёнка",
+                    callback_data="export:mode:child",
+                )
+            ],
+        ]
+    )
+
+
+def export_departments_keyboard(
+    departments: list, shift_name_map: dict[int, str]
+) -> InlineKeyboardMarkup:
+    """Выбор департамента/смены для экспорта."""
+    builder = InlineKeyboardBuilder()
+    for d in departments:
+        shift_name = shift_name_map.get(d.shift_id, f"Смена {d.shift_id}")
+        builder.button(
+            text=f"📂 {shift_name} — {d.name}",
+            callback_data=f"export:dep:{d.id}",
+        )
+    builder.button(text="← Назад", callback_data="export:menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def export_format_keyboard(scope: str) -> InlineKeyboardMarkup:
+    """Выбор формата файла. scope: 'shift' (ZIP всей смены) или 'child' (один ребёнок)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📄 PPTX", callback_data=f"export:{scope}_fmt:pptx"
+                ),
+                InlineKeyboardButton(
+                    text="📕 PDF", callback_data=f"export:{scope}_fmt:pdf"
+                ),
+            ],
+            [InlineKeyboardButton(text="← Назад", callback_data="export:menu")],
+        ]
+    )
+
+
+def export_children_keyboard(
+    students: list, page: int = 0, page_size: int = CHILDREN_PAGE_SIZE
+) -> InlineKeyboardMarkup:
+    """Постраничный список детей с готовыми (финализированными) отчётами."""
+    builder = InlineKeyboardBuilder()
+    page, total_pages, start = paginate(len(students), page, page_size)
+    for s in students[start:start + page_size]:
+        builder.button(
+            text=f"✅ {s.full_name}",
+            callback_data=f"export:child:{s.id}",
+        )
+    builder.adjust(1)
+
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(
+                InlineKeyboardButton(
+                    text="⬅️", callback_data=f"export:child_page:{page - 1}"
+                )
+            )
+        nav.append(
+            InlineKeyboardButton(
+                text=f"{page + 1}/{total_pages}", callback_data="export:child_page:noop"
+            )
+        )
+        if page < total_pages - 1:
+            nav.append(
+                InlineKeyboardButton(
+                    text="➡️", callback_data=f"export:child_page:{page + 1}"
+                )
+            )
+        builder.row(*nav)
+
+    builder.row(InlineKeyboardButton(text="← Назад", callback_data="export:menu"))
+    return builder.as_markup()
+
 
 

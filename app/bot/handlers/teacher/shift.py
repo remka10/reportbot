@@ -501,6 +501,7 @@ async def _show_children(
     session: AsyncSession,
     state: FSMContext,
     department_id: int,
+    page: int = 0,
 ) -> None:
     students, progress_map, finalized_ids, total = await _build_children_view(
         user, session, state, department_id
@@ -511,11 +512,12 @@ async def _show_children(
             "Добавьте их через /admin."
         )
         return
+    await state.update_data(child_page=page)
     await callback.message.edit_text(
         f"👦 <b>Список детей</b>\n"
         f"Готово: {len(finalized_ids)}/{total} отчётов\n\n"
         "Выберите ребёнка:",
-        reply_markup=children_keyboard(students, progress_map, finalized_ids),
+        reply_markup=children_keyboard(students, progress_map, finalized_ids, page=page),
     )
 
 
@@ -525,6 +527,7 @@ async def _show_children_message(
     session: AsyncSession,
     state: FSMContext,
     department_id: int,
+    page: int = 0,
 ) -> None:
     students, progress_map, finalized_ids, total = await _build_children_view(
         user, session, state, department_id
@@ -536,12 +539,13 @@ async def _show_children_message(
         )
         await state.clear()
         return
+    await state.update_data(child_page=page)
     await message.answer(
         f"✅ Контекст сохранён!\n\n"
         f"👦 <b>Список детей</b>\n"
         f"Готово: {len(finalized_ids)}/{total} отчётов\n\n"
         "Выберите ребёнка:",
-        reply_markup=children_keyboard(students, progress_map, finalized_ids),
+        reply_markup=children_keyboard(students, progress_map, finalized_ids, page=page),
     )
 
 
@@ -557,5 +561,59 @@ async def back_to_child_list(
         await callback.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
         return
 
-    await _show_children(callback, user, session, state, department_id)
+    await _show_children(callback, user, session, state, department_id,
+                         page=data.get("child_page", 0))
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("teacher:child_page:"))
+async def paginate_children(
+    callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
+) -> None:
+    """Постраничная навигация по списку детей."""
+    raw = callback.data.split(":")[-1]
+    if raw == "noop":
+        # Нажатие на индикатор «N/M» — ничего не делаем.
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    department_id = data.get("department_id")
+    if not department_id:
+        await callback.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
+        return
+
+    try:
+        page = int(raw)
+    except ValueError:
+        page = 0
+
+    await _show_children(callback, user, session, state, department_id, page=page)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "teacher:context:edit")
+async def edit_context_from_list(
+    callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
+) -> None:
+    """Изменение контекста смены из экрана списка детей (отдельная кнопка).
+
+    Работает независимо от текущего состояния FSM: переводит педагога в ввод
+    нового контекста для текущего департамента.
+    """
+    data = await state.get_data()
+    department_id = data.get("department_id")
+    if not department_id:
+        await callback.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "✏️ <b>Введите новый контекст смены:</b>\n\n"
+        "Расскажите о сюжете, чем занимались дети, ключевые события.\n"
+        "Можно написать текстом или отправить голосовое сообщение."
+    )
+    await state.set_state(ShiftSelectStates.entering_context)
+    await callback.answer()
+
+
+
