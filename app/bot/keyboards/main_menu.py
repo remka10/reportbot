@@ -59,35 +59,36 @@ def after_finalize_menu(done: int, total: int) -> InlineKeyboardMarkup:
     )
 
 
-def export_menu() -> InlineKeyboardMarkup:
+def export_menu(back_callback: str | None = None) -> InlineKeyboardMarkup:
     """Актуальное меню экспорта с тремя отдельными сценариями."""
-    return export_mode_menu()
+    return export_mode_menu(back_callback=back_callback)
 
 
-def export_mode_menu() -> InlineKeyboardMarkup:
+def export_mode_menu(back_callback: str | None = None) -> InlineKeyboardMarkup:
     """Первый шаг скачивания: выбрать один из трёх сценариев."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="👤 Отчёт одного ребёнка",
-                    callback_data="export:mode:child",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🏢 Отчёты департамента",
-                    callback_data="export:mode:department",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🏕 Скачать все отчёты смены",
-                    callback_data="export:mode:all",
-                )
-            ],
-        ]
-    )
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="👤 Отчёт одного ребёнка",
+                callback_data="export:mode:child",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🏢 Отчёты департамента",
+                callback_data="export:mode:department",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🏕 Скачать все отчёты смены",
+                callback_data="export:mode:all",
+            )
+        ],
+    ]
+    if back_callback:
+        rows.append([InlineKeyboardButton(text="← Назад", callback_data=back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def export_shifts_keyboard(
@@ -178,6 +179,7 @@ def export_children_keyboard(
 
     builder.row(InlineKeyboardButton(text="← Назад", callback_data=back_callback))
     return builder.as_markup()
+
 
 
 

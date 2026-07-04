@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 router = Router(name="teacher_export")
 
 
+def _export_back_callback(user: User) -> str | None:
+    """Куда возвращать пользователя с первого экрана экспорта."""
+    return "admin:main" if user.role == UserRole.admin else None
+
+
+def _export_menu_for_user(user: User):
+    return export_menu(back_callback=_export_back_callback(user))
+
+
+def _export_mode_menu_for_user(user: User):
+    return export_mode_menu(back_callback=_export_back_callback(user))
+
+
 async def _resolve_shift_context(
     session: AsyncSession, teacher_id: int, shift_id: int, department_id: int | None
 ) -> str:
@@ -68,12 +81,12 @@ async def _resolve_dep_number(
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "export:menu")
-async def cb_export_menu(cb: CallbackQuery, state: FSMContext) -> None:
+async def cb_export_menu(cb: CallbackQuery, state: FSMContext, user: User) -> None:
     """Первый шаг скачивания: выбрать один из трёх сценариев."""
     await cb.message.edit_text(
         "📥 <b>Скачать отчёты</b>\n\n"
         "Что вы хотите скачать?",
-        reply_markup=export_mode_menu(),
+        reply_markup=_export_mode_menu_for_user(user),
     )
     await cb.answer()
 
@@ -126,7 +139,7 @@ async def _show_export_shifts(
     if not shifts:
         await cb.message.edit_text(
             "📭 Нет доступных смен для выгрузки.",
-            reply_markup=export_mode_menu(),
+            reply_markup=_export_mode_menu_for_user(user),
         )
         await cb.answer()
         return
@@ -193,7 +206,7 @@ async def cb_export_shift(
     if not departments:
         await cb.message.edit_text(
             "📭 В этой смене нет доступных департаментов для выгрузки.",
-            reply_markup=export_mode_menu(),
+            reply_markup=_export_mode_menu_for_user(user),
         )
         await cb.answer()
         return
@@ -265,7 +278,7 @@ async def _show_export_children(
     if not ready:
         await cb.message.edit_text(
             "📭 В этом департаменте нет готовых (финализированных) отчётов.",
-            reply_markup=export_mode_menu(),
+            reply_markup=_export_mode_menu_for_user(user),
         )
         await cb.answer()
         return
@@ -501,7 +514,7 @@ async def _export_zip(
     if not reports:
         await status_msg.edit_text(
             "⚠️ Нет финализированных отчётов для скачивания.",
-            reply_markup=export_menu(),
+            reply_markup=_export_menu_for_user(user),
         )
         return
 
@@ -510,7 +523,7 @@ async def _export_zip(
     if not shift or not teacher:
         await status_msg.edit_text(
             "⚠️ Ошибка: не найдены данные для экспорта.",
-            reply_markup=export_menu(),
+            reply_markup=_export_menu_for_user(user),
         )
         return
 
@@ -555,7 +568,7 @@ async def _export_zip(
             if export_scope == "department"
             else "⚠️ Нет финализированных отчётов для скачивания."
         )
-        await status_msg.edit_text(empty_text, reply_markup=export_menu())
+        await status_msg.edit_text(empty_text, reply_markup=_export_menu_for_user(user))
         return
 
     try:
@@ -577,7 +590,7 @@ async def _export_zip(
         if added_count == 0:
             await status_msg.edit_text(
                 "⚠️ Не удалось сгенерировать ни один файл для архива.",
-                reply_markup=export_menu(),
+                reply_markup=_export_menu_for_user(user),
             )
             return
 
@@ -612,7 +625,7 @@ async def _export_zip(
         logger.error(f"ZIP export error: {e}", exc_info=True)
         await status_msg.edit_text(
             "⚠️ Ошибка при создании архива.",
-            reply_markup=export_menu(),
+            reply_markup=_export_menu_for_user(user),
         )
 
 
