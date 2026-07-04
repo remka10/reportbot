@@ -130,7 +130,7 @@ async def create_shift_dates(
     departments = await dep_repo.create_for_shift(shift.id)
 
     await state.clear()
-    dep_lines = "\n".join(f"  • {d.name}" for d in departments)
+    dep_lines = "\n".join(f"  • {d.emoji} {d.name}" for d in departments)
     await message.answer(
         f"✅ Смена создана!\n"
         f"<b>{shift.name}</b>\n"
@@ -242,7 +242,7 @@ async def cb_assign_teacher_confirm(
     await state.clear()
     await cb.message.edit_text(
         f"✅ Педагог привязан к департаменту "
-        f"<b>{department.name if department else department_id}</b>.",
+        f"<b>{department.emoji + ' ' + department.name if department else department_id}</b>.",
         parse_mode="HTML",
         reply_markup=back_keyboard_admin("admin:shifts"),
     )

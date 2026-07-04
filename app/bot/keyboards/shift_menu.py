@@ -28,7 +28,7 @@ def departments_keyboard(
     for d in departments:
         shift_name = shift_name_map.get(d.shift_id, f"Смена {d.shift_id}")
         builder.button(
-            text=f"📂 {shift_name} — {d.name}",
+            text=f"{d.emoji} {shift_name} — {d.name}",
             callback_data=f"teacher:department:{d.id}",
         )
     builder.adjust(1)
@@ -98,5 +98,6 @@ def context_preview_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
 
 

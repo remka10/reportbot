@@ -112,7 +112,10 @@ def departments_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     # DEPARTMENTS — dict[int, dict], итерируем .items()
     for dept_id, dept_info in DEPARTMENTS.items():
-        builder.button(text=dept_info["name"], callback_data=f"dept:{dept_id}")
+        builder.button(
+            text=f"{dept_info.get('emoji', '🏢')} {dept_info['name']}",
+            callback_data=f"dept:{dept_id}",
+        )
     builder.adjust(1)
     return builder.as_markup()
 
@@ -136,7 +139,7 @@ def departments_list_keyboard(
     builder = InlineKeyboardBuilder()
     for d in departments:
         builder.button(
-            text=d.name,
+            text=f"{d.emoji} {d.name}",
             callback_data=f"select_department:{d.id}",
         )
     builder.button(text="← Назад", callback_data=back_to)

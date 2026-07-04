@@ -42,15 +42,15 @@ class DialogRole(str, enum.Enum):
 # 8 — Проект 11           #91D744  салатовый
 # 9 — Летово Джун         #FB4724  оранжевый
 DEPARTMENTS: dict[int, dict] = {
-    1: {"name": "Департамент управления",          "hex": "F9423A"},
-    2: {"name": "Департамент общественных связей", "hex": "FF672D"},
-    3: {"name": "Инженерный департамент",          "hex": "EDC731"},
-    4: {"name": "Департамент Икс",                 "hex": "242424"},
-    5: {"name": "Научный департамент",             "hex": "50C787"},
-    6: {"name": "IT-департамент",                  "hex": "5A88FF"},
-    7: {"name": "Департамент дизайна",             "hex": "C061F3"},
-    8: {"name": "Проект 11",                       "hex": "91D744"},
-    9: {"name": "Летово Джун",                     "hex": "FB4724"},
+    1: {"name": "Департамент управления",          "hex": "F9423A", "emoji": "🔴"},
+    2: {"name": "Департамент общественных связей", "hex": "FF672D", "emoji": "🟧"},
+    3: {"name": "Инженерный департамент",          "hex": "EDC731", "emoji": "🟡"},
+    4: {"name": "Департамент Икс",                 "hex": "242424", "emoji": "⚫"},
+    5: {"name": "Научный департамент",             "hex": "50C787", "emoji": "🟢"},
+    6: {"name": "IT-департамент",                  "hex": "5A88FF", "emoji": "🔵"},
+    7: {"name": "Департамент дизайна",             "hex": "C061F3", "emoji": "🟣"},
+    8: {"name": "Проект 11",                       "hex": "91D744", "emoji": "🟩"},
+    9: {"name": "Летово Джун",                     "hex": "FB4724", "emoji": "🟠"},
 }
 
 
@@ -60,6 +60,10 @@ def get_department_name(department_id: int) -> str:
 
 def get_department_hex(department_id: int) -> str:
     return DEPARTMENTS.get(department_id, {}).get("hex", "E84130")
+
+
+def get_department_emoji(department_id: int) -> str:
+    return DEPARTMENTS.get(department_id, {}).get("emoji", "🏢")
 
 
 # ─── Таблицы ──────────────────────────────────────────────────────────────────
@@ -132,6 +136,10 @@ class Department(Base):
     @property
     def color(self) -> str:
         return get_department_hex(self.department_number)
+
+    @property
+    def emoji(self) -> str:
+        return get_department_emoji(self.department_number)
 
 
 class TeacherDepartment(Base):

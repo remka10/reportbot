@@ -114,7 +114,7 @@ def export_departments_keyboard(
     builder = InlineKeyboardBuilder()
     for d in departments:
         builder.button(
-            text=f"🏢 {d.name}",
+            text=f"{d.emoji} {d.name}",
             callback_data=f"export:dep:{d.id}",
         )
     builder.button(text="← Назад", callback_data=back_callback)
@@ -178,6 +178,7 @@ def export_children_keyboard(
 
     builder.row(InlineKeyboardButton(text="← Назад", callback_data=back_callback))
     return builder.as_markup()
+
 
 
 
