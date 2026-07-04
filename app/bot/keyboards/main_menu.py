@@ -21,12 +21,6 @@ def teacher_main_menu() -> InlineKeyboardMarkup:
                     callback_data="export:menu",
                 )
             ],
-            [
-                InlineKeyboardButton(
-                    text="📦 Все отчёты смены",
-                    callback_data="export:all",
-                )
-            ],
         ]
     )
 
@@ -49,10 +43,6 @@ def after_finalize_menu(done: int, total: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="📥 Скачать отчёты",
                     callback_data="export:menu",
-                ),
-                InlineKeyboardButton(
-                    text="📦 Все отчёты",
-                    callback_data="export:all",
                 ),
             ],
         ]
@@ -179,6 +169,7 @@ def export_children_keyboard(
 
     builder.row(InlineKeyboardButton(text="← Назад", callback_data=back_callback))
     return builder.as_markup()
+
 
 
 

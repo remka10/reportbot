@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.keyboards.admin_menu import (
     back_keyboard_admin, shifts_menu, departments_list_keyboard,
 )
+from app.bot.utils.user_display import user_button_label
 from app.bot.states.admin_states import (
     CreateShiftStates, ArchiveShiftStates, AssignTeacherStates,
 )
@@ -216,7 +217,7 @@ async def cb_assign_department_selected(
     await state.set_state(AssignTeacherStates.waiting_teacher_select)
     builder = InlineKeyboardBuilder()
     for t in teachers:
-        builder.button(text=t.full_name, callback_data=f"assign_teacher:{t.id}")
+        builder.button(text=user_button_label(t), callback_data=f"assign_teacher:{t.id}")
     builder.button(text="← Назад", callback_data="admin:shifts:assign")
     builder.adjust(1)
     await cb.message.edit_text(

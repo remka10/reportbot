@@ -30,13 +30,13 @@ class UserRepository:
 
     async def get_by_role(self, role: UserRole) -> Sequence[User]:
         result = await self.session.execute(
-            select(User).where(User.role == role).order_by(User.full_name)
+            select(User).where(User.role == role).order_by(User.username, User.id)
         )
         return result.scalars().all()
 
     async def get_all_active(self) -> Sequence[User]:
         result = await self.session.execute(
-            select(User).where(User.is_active == True).order_by(User.full_name)
+            select(User).where(User.is_active == True).order_by(User.username, User.id)
         )
         return result.scalars().all()
 

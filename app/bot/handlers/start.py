@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.main_menu import teacher_main_menu
 from app.bot.keyboards.admin_menu import admin_main_menu
+from app.bot.utils.user_display import user_greeting_name
 from app.database.models import User, UserRole
 from app.repositories.shift_repo import ShiftRepository
 from app.repositories.report_repo import ReportRepository
@@ -41,7 +42,7 @@ async def _start_teacher(
 
     if not departments:
         await message.answer(
-            f"👋 Привет, <b>{user.full_name}</b>!\n\n"
+            f"👋 Привет, <b>{user_greeting_name(user)}</b>!\n\n"
             "У вас пока нет привязанных департаментов.\n"
             "Обратитесь к администратору, чтобы вас добавили в департамент."
         )
@@ -70,7 +71,7 @@ async def _start_teacher(
 
 
     await message.answer(
-        f"👋 Привет, <b>{user.full_name}</b>!{stats_block}\n\n"
+        f"👋 Привет, <b>{user_greeting_name(user)}</b>!{stats_block}\n\n"
         "Выберите действие:",
         reply_markup=teacher_main_menu(),
     )
@@ -84,7 +85,7 @@ async def _start_admin(message: Message, user: User) -> None:
     role_label = role_labels.get(user.role, user.role.value)
 
     text = (
-        f"👋 Привет, <b>{user.full_name}</b>!\n"
+        f"👋 Привет, <b>{user_greeting_name(user)}</b>!\n"
         f"Роль: {role_label}\n\n"
         "Используйте /admin для управления системой."
     )

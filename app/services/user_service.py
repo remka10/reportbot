@@ -9,6 +9,11 @@ from app.repositories.user_repo import UserRepository
 logger = logging.getLogger(__name__)
 
 
+def _display_name(user_id: int, username: str | None = None) -> str:
+    """Значение для обязательного full_name: Telegram username или @id."""
+    return f"@{username}" if username else f"@{user_id}"
+
+
 @dataclass
 class ServiceResult:
     success: bool
@@ -25,8 +30,8 @@ class UserService:
         self,
         actor: User,
         new_user_id: int,
-        full_name: str,
         role: UserRole,
+        username: str | None = None,
     ) -> ServiceResult:
         """
         Добавить нового пользователя.
@@ -42,6 +47,7 @@ class UserService:
 
         # Проверяем — не существует ли уже
 
+        full_name = _display_name(new_user_id, username)
         existing = await self.repo.get_by_id(new_user_id)
         if existing:
             if existing.is_active:
@@ -55,23 +61,26 @@ class UserService:
                 existing.is_active = True
                 existing.role = role
                 existing.full_name = full_name
+                existing.username = username or existing.username
                 return ServiceResult(
                     success=True,
                     message=f"✅ Пользователь <b>{full_name}</b> реактивирован "
-                            f"с ролью <b>{role.value}</b>.",
+                            f"с ролью <b>{role.value}</b>.\n"
+                            f"ID: <code>@{new_user_id}</code>",
                 )
 
         await self.repo.create(
             user_id=new_user_id,
             full_name=full_name,
             role=role,
+            username=username,
         )
 
         return ServiceResult(
             success=True,
             message=f"✅ Пользователь <b>{full_name}</b> добавлен "
                     f"с ролью <b>{role.value}</b>.\n"
-                    f"ID: <code>{new_user_id}</code>",
+                    f"ID: <code>@{new_user_id}</code>",
         )
 
     async def change_role(

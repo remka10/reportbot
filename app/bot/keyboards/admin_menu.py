@@ -7,6 +7,7 @@ from aiogram.types import (
     ReplyKeyboardRemove,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from app.bot.utils.user_display import user_button_label
 from app.database.models import Shift, User, UserRole, DEPARTMENTS, Department
 
 
@@ -151,7 +152,7 @@ def users_list_keyboard(users: list[User]) -> InlineKeyboardMarkup:
     """Список пользователей в виде inline-кнопок."""
     builder = InlineKeyboardBuilder()
     for u in users:
-        label = f"{u.full_name} ({u.role.value})"
+        label = user_button_label(u)
         builder.button(text=label, callback_data=f"select_user:{u.id}")
     builder.adjust(1)
     return builder.as_markup()
