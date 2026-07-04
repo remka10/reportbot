@@ -23,7 +23,7 @@ def teacher_main_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="📦 Скачать все отчёты",
+                    text="📦 Все отчёты смены",
                     callback_data="export:all",
                 )
             ],
@@ -60,53 +60,14 @@ def after_finalize_menu(done: int, total: int) -> InlineKeyboardMarkup:
 
 
 def export_menu() -> InlineKeyboardMarkup:
-    """LEGACY-меню экспорта (быстрые кнопки для «текущего» ребёнка/смены из state).
-
-    Оставлено для обратной совместимости — используется в некоторых
-    промежуточных сообщениях. Новый пошаговый флоу — см. export_mode_menu().
-    """
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📄 PPTX (текущий)",
-                    callback_data="export:single",
-                ),
-                InlineKeyboardButton(
-                    text="📕 PDF (текущий)",
-                    callback_data="export:single_pdf",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📦 Все PPTX (ZIP)",
-                    callback_data="export:zip",
-                ),
-                InlineKeyboardButton(
-                    text="📦 Все PDF (ZIP)",
-                    callback_data="export:zip_pdf",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="← Назад",
-                    callback_data="teacher:child_list",
-                )
-            ],
-        ]
-    )
+    """Актуальное меню экспорта с тремя отдельными сценариями."""
+    return export_mode_menu()
 
 
 def export_mode_menu() -> InlineKeyboardMarkup:
-    """Первый шаг скачивания: выбрать что скачать — всю смену или одного ребёнка."""
+    """Первый шаг скачивания: выбрать один из трёх сценариев."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📦 Отчёты всей смены",
-                    callback_data="export:mode:shift",
-                )
-            ],
             [
                 InlineKeyboardButton(
                     text="👤 Отчёт одного ребёнка",
@@ -115,53 +76,54 @@ def export_mode_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="📦 Скачать все отчёты сразу",
-                    callback_data="export:all",
+                    text="🏢 Отчёты департамента",
+                    callback_data="export:mode:department",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏕 Скачать все отчёты смены",
+                    callback_data="export:mode:all",
                 )
             ],
         ]
     )
 
 
-def export_all_mode_menu() -> InlineKeyboardMarkup:
-    """Быстрый вход в массовую выгрузку: сразу выбираем департамент для ZIP."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📦 ZIP PPTX по смене",
-                    callback_data="export:mode:shift",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📦 ZIP PDF по смене",
-                    callback_data="export:mode:shift_pdf",
-                )
-            ],
-            [InlineKeyboardButton(text="← Назад", callback_data="export:menu")],
-        ]
-    )
+def export_shifts_keyboard(
+    shifts: list,
+    back_callback: str = "export:menu",
+) -> InlineKeyboardMarkup:
+    """Выбор смены для экспорта."""
+    builder = InlineKeyboardBuilder()
+    for shift in shifts:
+        builder.button(
+            text=f"🏕 {shift.name}",
+            callback_data=f"export:shift:{shift.id}",
+        )
+    builder.button(text="← Назад", callback_data=back_callback)
+    builder.adjust(1)
+    return builder.as_markup()
 
 
 def export_departments_keyboard(
-    departments: list, shift_name_map: dict[int, str]
+    departments: list,
+    back_callback: str = "export:menu",
 ) -> InlineKeyboardMarkup:
-    """Выбор департамента/смены для экспорта."""
+    """Выбор департамента для экспорта внутри выбранной смены."""
     builder = InlineKeyboardBuilder()
     for d in departments:
-        shift_name = shift_name_map.get(d.shift_id, f"Смена {d.shift_id}")
         builder.button(
-            text=f"📂 {shift_name} — {d.name}",
+            text=f"🏢 {d.name}",
             callback_data=f"export:dep:{d.id}",
         )
-    builder.button(text="← Назад", callback_data="export:menu")
+    builder.button(text="← Назад", callback_data=back_callback)
     builder.adjust(1)
     return builder.as_markup()
 
 
 def export_format_keyboard(scope: str, back_callback: str = "export:menu") -> InlineKeyboardMarkup:
-    """Выбор формата файла. scope: 'shift' (ZIP всей смены) или 'child' (один ребёнок)."""
+    """Выбор формата файла для текущего сценария экспорта."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -178,7 +140,10 @@ def export_format_keyboard(scope: str, back_callback: str = "export:menu") -> In
 
 
 def export_children_keyboard(
-    students: list, page: int = 0, page_size: int = CHILDREN_PAGE_SIZE
+    students: list,
+    page: int = 0,
+    page_size: int = CHILDREN_PAGE_SIZE,
+    back_callback: str = "export:menu",
 ) -> InlineKeyboardMarkup:
     """Постраничный список детей с готовыми (финализированными) отчётами."""
     builder = InlineKeyboardBuilder()
@@ -211,8 +176,11 @@ def export_children_keyboard(
             )
         builder.row(*nav)
 
-    builder.row(InlineKeyboardButton(text="← Назад", callback_data="export:menu"))
+    builder.row(InlineKeyboardButton(text="← Назад", callback_data=back_callback))
     return builder.as_markup()
+
+
+
 
 
 

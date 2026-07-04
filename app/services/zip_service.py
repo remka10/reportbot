@@ -3,6 +3,7 @@ import io
 import logging
 import zipfile
 from pathlib import Path
+
 from app.database.models import Report, Student, Shift, User
 
 logger = logging.getLogger(__name__)
@@ -10,26 +11,43 @@ logger = logging.getLogger(__name__)
 
 class ZipService:
 
+    @staticmethod
+    def _safe_part(value: str) -> str:
+        return (
+            value.replace("/", "-")
+            .replace("\\", "-")
+            .replace(":", "-")
+            .replace(" ", "_")
+        )
+
     def create_zip(
         self,
-        reports_with_students: list[tuple[Report, Student]],
+        report_items: list[dict],
         shift: Shift,
         teacher: User,
         report_service,
-        shift_context: str | None = None,
         as_pdf: bool = False,
-    ) -> tuple[io.BytesIO, str]:
+        archive_label: str | None = None,
+    ) -> tuple[io.BytesIO, str, int, int]:
         """
-        Создаёт ZIP-архив всех отчётов. Возвращает (BytesIO, archive_name).
+        Создаёт ZIP-архив всех отчётов.
+        Возвращает (BytesIO, archive_name, added_count, failed_count).
 
-        report_service — сервис с методами generate(...) → Path (PPTX) и
-        generate_pdf(...) → Path (PDF). При as_pdf=True в архив кладутся PDF.
+        report_items — список словарей вида:
+        {"report": Report, "student": Student, "shift_context": str, "subfolder": str}
         """
         buf = io.BytesIO()
         gen = report_service.generate_pdf if as_pdf else report_service.generate
 
+        added_count = 0
+        failed_count = 0
+
         with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for report, student in reports_with_students:
+            for item in report_items:
+                report: Report = item["report"]
+                student: Student = item["student"]
+                shift_context = item.get("shift_context")
+                subfolder = item.get("subfolder")
                 try:
                     file_path: Path = gen(
                         report=report,
@@ -38,18 +56,25 @@ class ZipService:
                         teacher=teacher,
                         shift_context=shift_context,
                     )
-                    zf.write(file_path, arcname=file_path.name)
+                    arcname = file_path.name
+                    if subfolder:
+                        arcname = str(Path(subfolder) / file_path.name)
+                    zf.write(file_path, arcname=arcname)
+                    added_count += 1
                 except Exception as e:
+                    failed_count += 1
                     logger.error(
                         f"Failed to generate report for student={student.full_name}: {e}",
                         exc_info=True,
                     )
 
-        safe_shift = shift.name.replace(" ", "_").replace("/", "-")
+        safe_shift = self._safe_part(archive_label or shift.name)
         suffix = "_pdf" if as_pdf else ""
         archive_name = f"reports_{safe_shift}{suffix}.zip"
 
         buf.seek(0)
-        return buf, archive_name
+        return buf, archive_name, added_count, failed_count
+
+
 
 

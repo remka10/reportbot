@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -9,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.keyboards.main_menu import (
     export_menu,
     export_mode_menu,
-    export_all_mode_menu,
+    export_shifts_keyboard,
     export_departments_keyboard,
     export_format_keyboard,
     export_children_keyboard,
@@ -70,7 +69,7 @@ async def _resolve_dep_number(
 
 @router.callback_query(F.data == "export:menu")
 async def cb_export_menu(cb: CallbackQuery, state: FSMContext) -> None:
-    """Первый шаг скачивания: выбрать что скачать — всю смену или одного ребёнка."""
+    """Первый шаг скачивания: выбрать один из трёх сценариев."""
     await cb.message.edit_text(
         "📥 <b>Скачать отчёты</b>\n\n"
         "Что вы хотите скачать?",
@@ -79,64 +78,133 @@ async def cb_export_menu(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.callback_query(F.data == "export:all")
-async def cb_export_all_menu(cb: CallbackQuery, state: FSMContext) -> None:
-    """Быстрый вход в массовую выгрузку ZIP всех отчётов по смене."""
-    await state.update_data(export_mode="shift")
-    await cb.message.edit_text(
-        "📦 <b>Скачать все отчёты</b>\n\n"
-        "Выберите формат массовой выгрузки:",
-        reply_markup=export_all_mode_menu(),
-    )
-    await cb.answer()
-
-
 async def _available_departments(session: AsyncSession, user: User):
-    """Список доступных департаментов + карта shift_id -> название смены."""
+    """Все доступные департаменты пользователя."""
     dep_repo = DepartmentRepository(session)
-    shift_repo = ShiftRepository(session)
     if user.role == UserRole.admin:
         departments = list(await dep_repo.get_all_active())
     else:
         departments = list(await dep_repo.get_for_teacher(user.id))
-    shift_name_map: dict[int, str] = {}
-    for d in departments:
-        if d.shift_id not in shift_name_map:
-            shift = await shift_repo.get_by_id(d.shift_id)
-            shift_name_map[d.shift_id] = shift.name if shift else f"Смена {d.shift_id}"
-    return departments, shift_name_map
+    return departments
 
 
-@router.callback_query(F.data.in_({"export:mode:shift", "export:mode:shift_pdf", "export:mode:child"}))
-async def cb_export_mode(
-    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+async def _available_shifts(session: AsyncSession, user: User):
+    """Все доступные смены пользователя."""
+    shift_repo = ShiftRepository(session)
+    if user.role == UserRole.admin:
+        return list(await shift_repo.get_all_active())
+    return list(await shift_repo.get_for_teacher(user.id))
+
+
+async def _available_departments_for_shift(
+    session: AsyncSession, user: User, shift_id: int
+):
+    """Доступные департаменты внутри выбранной смены."""
+    if user.role == UserRole.admin:
+        return list(await DepartmentRepository(session).get_by_shift(shift_id))
+    departments = await _available_departments(session, user)
+    return [d for d in departments if d.shift_id == shift_id]
+
+
+async def _show_export_shifts(
+    cb: CallbackQuery,
+    state: FSMContext,
+    user: User,
+    session: AsyncSession,
+    mode: str,
 ) -> None:
-    """Выбран режим экспорта → просим выбрать департамент/смену."""
-    mode = cb.data.split(":")[-1]  # 'shift' | 'child'
-    export_mode = "shift" if mode == "shift_pdf" else mode
+    """Общий шаг выбора смены для всех сценариев экспорта."""
     await state.update_data(
-        export_mode=export_mode,
-        export_force_pdf=(mode == "shift_pdf"),
+        export_mode=mode,
+        shift_id=None,
+        department_id=None,
+        student_id=None,
+        export_child_page=0,
     )
 
-    departments, shift_name_map = await _available_departments(session, user)
-    if not departments:
+    shifts = await _available_shifts(session, user)
+    if not shifts:
         await cb.message.edit_text(
-            "📭 Нет доступных департаментов для выгрузки.",
+            "📭 Нет доступных смен для выгрузки.",
             reply_markup=export_mode_menu(),
         )
         await cb.answer()
         return
 
-    title = (
-        "📦 <b>Отчёты всей смены</b>" if mode == "shift"
-        else "👤 <b>Отчёт одного ребёнка</b>"
-    )
-    if mode == "shift_pdf":
-        title = "📦 <b>Все отчёты в ZIP PDF</b>"
+    titles = {
+        "child": "👤 <b>Отчёт одного ребёнка</b>",
+        "department": "🏢 <b>Отчёты департамента</b>",
+        "all": "🏕 <b>Все отчёты смены</b>",
+    }
     await cb.message.edit_text(
-        f"{title}\n\nВыберите департамент:",
-        reply_markup=export_departments_keyboard(departments, shift_name_map),
+        f"{titles.get(mode, '📥 <b>Скачать отчёты</b>')}\n\nВыберите смену:",
+        reply_markup=export_shifts_keyboard(shifts),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.in_({
+    "export:mode:child",
+    "export:mode:department",
+    "export:mode:all",
+    "export:mode:shift",
+    "export:mode:shift_pdf",
+    "export:all",
+}))
+async def cb_export_mode(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Выбран режим экспорта → просим выбрать смену."""
+    raw_mode = cb.data.split(":")[-1]
+    if cb.data == "export:all" or raw_mode in {"shift", "shift_pdf", "all"}:
+        mode = "all"
+    elif raw_mode == "department":
+        mode = "department"
+    else:
+        mode = "child"
+    await _show_export_shifts(cb, state, user, session, mode)
+
+
+@router.callback_query(F.data.startswith("export:shift:"))
+async def cb_export_shift(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Выбрана смена → либо формат архива всей смены, либо список департаментов."""
+    shift_id = int(cb.data.split(":")[-1])
+    shift = await ShiftRepository(session).get_by_id(shift_id)
+    if shift is None:
+        await cb.answer("❌ Смена не найдена", show_alert=True)
+        return
+
+    await state.update_data(shift_id=shift_id, department_id=None, student_id=None)
+    data = await state.get_data()
+    mode = data.get("export_mode", "child")
+
+    if mode == "all":
+        await cb.message.edit_text(
+            f"🏕 <b>Все отчёты смены</b>\n{shift.name}\n\n"
+            "Выберите формат архива:",
+            reply_markup=export_format_keyboard("all", back_callback="export:all"),
+        )
+        await cb.answer()
+        return
+
+    departments = await _available_departments_for_shift(session, user, shift_id)
+    if not departments:
+        await cb.message.edit_text(
+            "📭 В этой смене нет доступных департаментов для выгрузки.",
+            reply_markup=export_mode_menu(),
+        )
+        await cb.answer()
+        return
+
+    title = "👤 <b>Отчёт одного ребёнка</b>" if mode == "child" else "🏢 <b>Отчёты департамента</b>"
+    await cb.message.edit_text(
+        f"{title}\n🏕 {shift.name}\n\nВыберите департамент:",
+        reply_markup=export_departments_keyboard(
+            departments,
+            back_callback=f"export:mode:{mode}",
+        ),
     )
     await cb.answer()
 
@@ -145,7 +213,7 @@ async def cb_export_mode(
 async def cb_export_dep(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    """Выбран департамент → в зависимости от режима: формат (смена) или список детей."""
+    """Выбран департамент → список детей или формат архива департамента."""
     department_id = int(cb.data.split(":")[-1])
     dep_repo = DepartmentRepository(session)
     department = await dep_repo.get_by_id(department_id)
@@ -154,25 +222,27 @@ async def cb_export_dep(
         return
 
     await state.update_data(
-        department_id=department_id, shift_id=department.shift_id
+        department_id=department_id,
+        shift_id=department.shift_id,
+        student_id=None,
     )
     data = await state.get_data()
-    mode = data.get("export_mode", "shift")
+    mode = data.get("export_mode", "department")
 
-    if mode == "shift":
-        data = await state.get_data()
-        if data.get("export_force_pdf"):
-            await _export_zip(cb, state, user, session, as_pdf=True)
-            return
+    if mode == "department":
         await cb.message.edit_text(
-            f"📦 <b>Отчёты всей смены</b>\n🏢 {department.name}\n\n"
-            "Выберите формат файла:",
-            reply_markup=export_format_keyboard("shift", back_callback="export:all"),
+            f"🏢 <b>Отчёты департамента</b>\n"
+            f"🏕 Смена {department.shift_id}\n"
+            f"🏢 {department.name}\n\n"
+            "Выберите формат архива:",
+            reply_markup=export_format_keyboard(
+                "department",
+                back_callback=f"export:shift:{department.shift_id}",
+            ),
         )
         await cb.answer()
         return
 
-    # mode == child: показываем список детей с готовыми отчётами
     await _show_export_children(cb, state, user, session, department_id, page=0)
 
 
@@ -202,9 +272,14 @@ async def _show_export_children(
 
     await state.update_data(export_child_page=page)
     await cb.message.edit_text(
-        "👤 <b>Отчёт одного ребёнка</b>\n\n"
+        f"👤 <b>Отчёт одного ребёнка</b>\n"
+        f"🏢 {department.name if department else ''}\n\n"
         "Выберите ребёнка (показаны только готовые отчёты):",
-        reply_markup=export_children_keyboard(ready, page=page),
+        reply_markup=export_children_keyboard(
+            ready,
+            page=page,
+            back_callback=f"export:shift:{shift_id}",
+        ),
     )
     await cb.answer()
 
@@ -237,9 +312,14 @@ async def cb_export_child_selected(
     """Выбран ребёнок → просим выбрать формат файла."""
     student_id = int(cb.data.split(":")[-1])
     await state.update_data(student_id=student_id)
+    data = await state.get_data()
+    department_id = data.get("department_id")
     await cb.message.edit_text(
         "👤 <b>Отчёт одного ребёнка</b>\n\nВыберите формат файла:",
-        reply_markup=export_format_keyboard("child", back_callback="export:menu"),
+        reply_markup=export_format_keyboard(
+            "child",
+            back_callback=(f"export:dep:{department_id}" if department_id else "export:menu"),
+        ),
     )
     await cb.answer()
 
@@ -253,13 +333,31 @@ async def cb_export_child_format(
     await _export_single(cb, state, user, session, as_pdf=as_pdf)
 
 
-@router.callback_query(F.data.startswith("export:shift_fmt:"))
-async def cb_export_shift_format(
+@router.callback_query(F.data.startswith("export:department_fmt:"))
+async def cb_export_department_format(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    """Формат выбран для всей смены → собираем ZIP."""
+    """Формат выбран для департамента → собираем ZIP."""
     as_pdf = cb.data.split(":")[-1] == "pdf"
-    await _export_zip(cb, state, user, session, as_pdf=as_pdf)
+    await _export_zip(cb, state, user, session, as_pdf=as_pdf, export_scope="department")
+
+
+@router.callback_query(F.data.startswith("export:all_fmt:"))
+async def cb_export_all_format(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Формат выбран для всей смены → собираем ZIP с папками департаментов."""
+    as_pdf = cb.data.split(":")[-1] == "pdf"
+    await _export_zip(cb, state, user, session, as_pdf=as_pdf, export_scope="all")
+
+
+@router.callback_query(F.data.startswith("export:shift_fmt:"))
+async def cb_export_shift_format_legacy(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Legacy callback: считаем его экспортом департамента."""
+    as_pdf = cb.data.split(":")[-1] == "pdf"
+    await _export_zip(cb, state, user, session, as_pdf=as_pdf, export_scope="department")
 
 
 
@@ -276,18 +374,28 @@ async def _export_single(
     shift_id = data.get("shift_id")
     department_id = data.get("department_id")
 
+    report_repo = ReportRepository(session)
+    report = None
+
+    report_id = data.get("report_id")
+    if report_id:
+        report = await report_repo.get_by_id(report_id)
+        if report:
+            student_id = student_id or report.student_id
+            shift_id = shift_id or report.shift_id
+
     if not student_id or not shift_id:
         await cb.answer("Сначала выберите ребёнка.", show_alert=True)
         return
 
     await cb.answer("⏳ Генерирую файл...")
 
-    report_repo = ReportRepository(session)
     student_repo = StudentRepository(session)
     shift_repo = ShiftRepository(session)
     user_repo = UserRepository(session)
 
-    report = await report_repo.get_by_student(user.id, student_id, shift_id)
+    if report is None or report.student_id != student_id or report.shift_id != shift_id:
+        report = await report_repo.get_by_student(user.id, student_id, shift_id)
     if not report or not report.is_finalized:
         await cb.message.answer(
             "⚠️ Отчёт не финализирован. Сначала сохраните отчёт."
@@ -363,6 +471,7 @@ async def cb_export_single_pdf(
 async def _export_zip(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession,
     as_pdf: bool,
+    export_scope: str,
 ) -> None:
     data = await state.get_data()
     shift_id = data.get("shift_id")
@@ -371,9 +480,18 @@ async def _export_zip(
     if not shift_id:
         await cb.answer("Сначала выберите смену.", show_alert=True)
         return
+    if export_scope == "department" and not department_id:
+        await cb.answer("Сначала выберите департамент.", show_alert=True)
+        return
 
-    status_msg = await cb.message.edit_text("⏳ Собираю архив с отчётами...")
+    status_text = (
+        "⏳ Собираю архив департамента..."
+        if export_scope == "department"
+        else "⏳ Собираю архив всей смены..."
+    )
+    status_msg = await cb.message.edit_text(status_text)
 
+    dep_repo = DepartmentRepository(session)
     report_repo = ReportRepository(session)
     student_repo = StudentRepository(session)
     shift_repo = ShiftRepository(session)
@@ -389,54 +507,104 @@ async def _export_zip(
 
     shift = await shift_repo.get_by_id(shift_id)
     teacher = await user_repo.get_by_id(user.id)
+    if not shift or not teacher:
+        await status_msg.edit_text(
+            "⚠️ Ошибка: не найдены данные для экспорта.",
+            reply_markup=export_menu(),
+        )
+        return
 
-    shift_context = await _resolve_shift_context(
-        session, user.id, shift_id, department_id
-    )
+    department = await dep_repo.get_by_id(department_id) if department_id else None
+    departments = await dep_repo.get_by_shift(shift_id)
+    department_map = {d.id: d for d in departments}
 
-    # Загружаем учащихся пакетно и проставляем номер департамента.
-    student_map: dict[int, object] = {}
+    report_items: list[dict] = []
     for report in reports:
-        s = await student_repo.get_by_id(report.student_id)
-        if s:
-            s.department_number = await _resolve_dep_number(
-                session, s, department_id
-            )
-            student_map[report.student_id] = s
+        student = await student_repo.get_by_id(report.student_id)
+        if not student:
+            continue
 
-    reports_with_students = [
-        (r, student_map[r.student_id])
-        for r in reports
-        if r.student_id in student_map
-    ]
+        student_department_id = getattr(student, "department_id", None) or department_id
+        if export_scope == "department" and student_department_id != department_id:
+            continue
+
+        item_department = department_map.get(student_department_id) if student_department_id else None
+        student.department_number = (
+            item_department.department_number
+            if item_department
+            else await _resolve_dep_number(session, student, department_id)
+        )
+
+        report_items.append(
+            {
+                "report": report,
+                "student": student,
+                "shift_context": await _resolve_shift_context(
+                    session,
+                    user.id,
+                    shift_id,
+                    student_department_id,
+                ),
+                "subfolder": item_department.name if item_department else "Без департамента",
+            }
+        )
+
+    if not report_items:
+        empty_text = (
+            "⚠️ В выбранном департаменте нет финализированных отчётов."
+            if export_scope == "department"
+            else "⚠️ Нет финализированных отчётов для скачивания."
+        )
+        await status_msg.edit_text(empty_text, reply_markup=export_menu())
+        return
 
     try:
         pptx_svc = PptxService()
         zip_svc = ZipService()
-        zip_buffer, archive_name = zip_svc.create_zip(
-            reports_with_students=reports_with_students,
+        zip_buffer, archive_name, added_count, failed_count = zip_svc.create_zip(
+            report_items=report_items,
             shift=shift,
             teacher=teacher,
             report_service=pptx_svc,
-            shift_context=shift_context,
             as_pdf=as_pdf,
+            archive_label=(
+                f"{shift.name}_{department.name}"
+                if export_scope == "department" and department
+                else shift.name
+            ),
         )
+
+        if added_count == 0:
+            await status_msg.edit_text(
+                "⚠️ Не удалось сгенерировать ни один файл для архива.",
+                reply_markup=export_menu(),
+            )
+            return
 
         zip_file = BufferedInputFile(
             zip_buffer.read(),
             filename=archive_name,
         )
         await status_msg.delete()
+        caption_title = (
+            "📦 <b>Архив департамента</b>"
+            if export_scope == "department"
+            else "📦 <b>Архив отчётов смены</b>"
+        )
+        caption_scope = f"\n{department.name}" if export_scope == "department" and department else ""
+        failed_caption = f"\nНе удалось добавить: {failed_count}" if failed_count else ""
         await cb.message.answer_document(
             zip_file,
             caption=(
-                f"📦 <b>Архив отчётов</b> ({'PDF' if as_pdf else 'PPTX'})\n"
+                f"{caption_title} ({'PDF' if as_pdf else 'PPTX'})\n"
                 f"{shift.name}\n"
-                f"Отчётов: {len(reports_with_students)}"
+                f"{caption_scope}\n"
+                f"Отчётов: {added_count}"
+                f"{failed_caption}"
             ),
         )
         logger.info(
-            f"Sent ZIP {archive_name}: {len(reports_with_students)} reports "
+            f"Sent ZIP {archive_name}: {added_count} reports "
             f"to teacher={user.id}"
         )
 
@@ -452,11 +620,11 @@ async def _export_zip(
 async def cb_export_zip(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    await _export_zip(cb, state, user, session, as_pdf=False)
+    await _export_zip(cb, state, user, session, as_pdf=False, export_scope="all")
 
 
 @router.callback_query(F.data == "export:zip_pdf")
 async def cb_export_zip_pdf(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    await _export_zip(cb, state, user, session, as_pdf=True)
+    await _export_zip(cb, state, user, session, as_pdf=True, export_scope="all")
