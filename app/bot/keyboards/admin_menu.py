@@ -34,6 +34,8 @@ def request_user_keyboard() -> ReplyKeyboardMarkup:
                         request_id=REQUEST_USER_ID,
                         user_is_bot=False,
                         max_quantity=1,
+                        request_name=True,
+                        request_username=True,
                     ),
                 )
             ],

@@ -9,9 +9,17 @@ from app.repositories.user_repo import UserRepository
 logger = logging.getLogger(__name__)
 
 
-def _display_name(user_id: int, username: str | None = None) -> str:
-    """Значение для обязательного full_name: Telegram username или @id."""
-    return f"@{username}" if username else f"@{user_id}"
+def _display_name(
+    user_id: int,
+    username: str | None = None,
+    display_name: str | None = None,
+) -> str:
+    """Значение для обязательного full_name: Telegram username, имя из Telegram или @id."""
+    if username:
+        return f"@{username}"
+    if display_name:
+        return display_name
+    return f"@{user_id}"
 
 
 @dataclass
@@ -32,6 +40,7 @@ class UserService:
         new_user_id: int,
         role: UserRole,
         username: str | None = None,
+        display_name: str | None = None,
     ) -> ServiceResult:
         """
         Добавить нового пользователя.
@@ -47,7 +56,7 @@ class UserService:
 
         # Проверяем — не существует ли уже
 
-        full_name = _display_name(new_user_id, username)
+        full_name = _display_name(new_user_id, username, display_name)
         existing = await self.repo.get_by_id(new_user_id)
         if existing:
             if existing.is_active:

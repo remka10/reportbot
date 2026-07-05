@@ -31,11 +31,29 @@ def admin_or_mod(user: User) -> bool:
     return user.role == UserRole.admin
 
 
-async def _ask_role(message: Message, state: FSMContext, user_id: int, username: str | None = None) -> None:
-    """Сохраняет Telegram ID/username и сразу переводит к выбору роли без ввода ФИО."""
-    await state.update_data(new_user_id=user_id, new_username=username)
+def _shared_user_display_name(shared_user: object) -> str | None:
+    """Имя из Telegram SharedUser, если username недоступен."""
+    first_name = getattr(shared_user, "first_name", None)
+    last_name = getattr(shared_user, "last_name", None)
+    display_name = " ".join(part for part in [first_name, last_name] if part).strip()
+    return display_name or None
+
+
+async def _ask_role(
+    message: Message,
+    state: FSMContext,
+    user_id: int,
+    username: str | None = None,
+    display_name: str | None = None,
+) -> None:
+    """Сохраняет Telegram ID/username/name и сразу переводит к выбору роли без ввода ФИО."""
+    await state.update_data(
+        new_user_id=user_id,
+        new_username=username,
+        new_display_name=display_name,
+    )
     await state.set_state(AddUserStates.waiting_role)
-    display = f"@{username}" if username else f"@{user_id}"
+    display = f"@{username}" if username else (display_name or f"@{user_id}")
     await message.answer(
         f"✅ Пользователь выбран: <b>{display}</b>\n"
         f"ID: <code>@{user_id}</code>\n\n"
@@ -141,11 +159,14 @@ async def add_user_shared(message: Message, state: FSMContext) -> None:
         return
 
     username = None
+    display_name = None
     if shared and getattr(shared, "users", None):
-        username = getattr(shared.users[0], "username", None)
+        shared_user = shared.users[0]
+        username = getattr(shared_user, "username", None)
+        display_name = _shared_user_display_name(shared_user)
 
     await message.answer("Клавиатура выбора пользователя убрана.", reply_markup=remove_reply_keyboard())
-    await _ask_role(message, state, user_id=tg_id, username=username)
+    await _ask_role(message, state, user_id=tg_id, username=username, display_name=display_name)
 
 
 @router.message(AddUserStates.waiting_user_id)
@@ -182,8 +203,11 @@ async def add_user_id(message: Message, state: FSMContext, session: AsyncSession
                 "или воспользуйтесь кнопкой «👤 Выбрать пользователя»."
             )
             return
+        contact_name = " ".join(
+            filter(None, [message.contact.first_name, message.contact.last_name])
+        ).strip() or None
         await message.answer("Клавиатура выбора пользователя убрана.", reply_markup=remove_reply_keyboard())
-        await _ask_role(message, state, user_id=tg_id)
+        await _ask_role(message, state, user_id=tg_id, display_name=contact_name)
         return
 
     # Нормализуем: убираем ведущий @ — поддерживаем и @123456, и @username
@@ -235,10 +259,15 @@ async def add_user_role(cb: CallbackQuery, state: FSMContext, user: User) -> Non
     data = await state.get_data()
     await state.update_data(role=role_value)
     await state.set_state(AddUserStates.confirm)
+    display = (
+        f"@{data['new_username']}"
+        if data.get("new_username")
+        else data.get("new_display_name") or "—"
+    )
 
     await cb.message.edit_text(
         f"Подтвердите добавление пользователя:\n"
-        f"• Ник: <b>{('@' + data['new_username']) if data.get('new_username') else '—'}</b>\n"
+        f"• Ник/имя Telegram: <b>{display}</b>\n"
         f"• ID: <code>@{data['new_user_id']}</code>\n"
         f"• Роль: <b>{role.value}</b>",
         reply_markup=confirm_keyboard(yes_data="admin:users:add:confirm"),
@@ -257,6 +286,7 @@ async def add_user_confirm(
             new_user_id=data["new_user_id"],
             role=UserRole(data["role"]),
             username=data.get("new_username"),
+            display_name=data.get("new_display_name"),
         )
         await state.clear()
         await cb.message.edit_text(

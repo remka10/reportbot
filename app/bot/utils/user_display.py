@@ -2,8 +2,12 @@ from app.database.models import User
 
 
 def telegram_username(user: User) -> str:
-    """Telegram username с @ или прочерк, если ник неизвестен."""
-    return f"@{user.username}" if user.username else "—"
+    """Telegram username с @ или Telegram-имя, если username недоступен."""
+    if user.username:
+        return f"@{user.username}"
+    if user.full_name and user.full_name != f"@{user.id}":
+        return user.full_name
+    return "—"
 
 
 def telegram_id(user: User) -> str:
@@ -13,7 +17,9 @@ def telegram_id(user: User) -> str:
 
 def user_button_label(user: User) -> str:
     """Короткая подпись пользователя для inline-кнопок."""
-    primary = f"@{user.username}" if user.username else telegram_id(user)
+    primary = telegram_username(user)
+    if primary == "—":
+        primary = telegram_id(user)
     return f"{primary} ({user.role.value})"
 
 
@@ -24,4 +30,5 @@ def user_stats_label(user: User) -> str:
 
 def user_greeting_name(user: User) -> str:
     """Имя в приветствии: приоритетно Telegram username, затем @id."""
-    return f"@{user.username}" if user.username else telegram_id(user)
+    primary = telegram_username(user)
+    return primary if primary != "—" else telegram_id(user)
