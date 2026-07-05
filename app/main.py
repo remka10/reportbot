@@ -10,6 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from fastapi import FastAPI
 
+from app.admin.router import install_memory_log_handler, router as admin_router
 from app.bot.middlewares.auth import AuthMiddleware
 from app.bot.middlewares.db_session import DbSessionMiddleware
 from app.bot.router import register_all_routers
@@ -20,6 +21,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+install_memory_log_handler()
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
@@ -106,6 +108,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, title="ReportBot")
+app.include_router(admin_router)
 
 
 @app.get("/health")

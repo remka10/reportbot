@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     max_audio_size_mb: int = 20
     reports_dir: str = "/app/reports"
 
+    # Web admin panel (/admin)
+    admin_panel_username: str = "admin"
+    admin_panel_password: str = "changeme"
+
     @field_validator("webhook_url")
     @classmethod
     def strip_trailing_slash(cls, v: str) -> str:
