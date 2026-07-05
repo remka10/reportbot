@@ -1,6 +1,6 @@
 """Update first teacher question wording
 
-Revision ID: 0005_update_first_question_character
+Revision ID: 0005_first_question
 Revises: 0004_remove_moderator_role
 Create Date: 2026-07-05
 """
@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0005_update_first_question_character"
+revision = "0005_first_question"
 down_revision = "0004_remove_moderator_role"
 branch_labels = None
 depends_on = None
