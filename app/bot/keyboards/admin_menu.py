@@ -188,6 +188,22 @@ def roles_keyboard(exclude_role: UserRole | None = None) -> InlineKeyboardMarkup
     return builder.as_markup()
 
 
+def assign_new_teacher_keyboard() -> InlineKeyboardMarkup:
+    """Предложение назначить только что добавленного педагога на смену/департамент."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🏕 Назначить на смену и департамент",
+                callback_data="admin:users:add:assign",
+            )],
+            [InlineKeyboardButton(
+                text="⏭ Пропустить",
+                callback_data="admin:users:add:skip",
+            )],
+        ]
+    )
+
+
 def confirm_keyboard(yes_data: str, no_data: str = "admin:cancel") -> InlineKeyboardMarkup:
     """Клавиатура подтверждения действия."""
     return InlineKeyboardMarkup(
