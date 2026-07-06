@@ -49,13 +49,26 @@ def after_finalize_menu(done: int, total: int) -> InlineKeyboardMarkup:
     )
 
 
-def export_menu(back_callback: str | None = None) -> InlineKeyboardMarkup:
+def export_menu(
+    back_callback: str | None = None,
+    allow_all_shift: bool = True,
+) -> InlineKeyboardMarkup:
     """Актуальное меню экспорта с тремя отдельными сценариями."""
-    return export_mode_menu(back_callback=back_callback)
+    return export_mode_menu(
+        back_callback=back_callback,
+        allow_all_shift=allow_all_shift,
+    )
 
 
-def export_mode_menu(back_callback: str | None = None) -> InlineKeyboardMarkup:
-    """Первый шаг скачивания: выбрать один из трёх сценариев."""
+def export_mode_menu(
+    back_callback: str | None = None,
+    allow_all_shift: bool = True,
+) -> InlineKeyboardMarkup:
+    """Первый шаг скачивания.
+
+    Для преподавателя доступна выгрузка одного ребёнка и своего департамента.
+    Полная выгрузка всей смены оставлена только администраторам.
+    """
     rows = [
         [
             InlineKeyboardButton(
@@ -69,13 +82,16 @@ def export_mode_menu(back_callback: str | None = None) -> InlineKeyboardMarkup:
                 callback_data="export:mode:department",
             )
         ],
-        [
-            InlineKeyboardButton(
-                text="🏕 Скачать все отчёты смены",
-                callback_data="export:mode:all",
-            )
-        ],
     ]
+    if allow_all_shift:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🏕 Скачать все отчёты смены",
+                    callback_data="export:mode:all",
+                )
+            ]
+        )
     if back_callback:
         rows.append([InlineKeyboardButton(text="← Назад", callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -169,6 +185,8 @@ def export_children_keyboard(
 
     builder.row(InlineKeyboardButton(text="← Назад", callback_data=back_callback))
     return builder.as_markup()
+
+
 
 
 

@@ -168,20 +168,10 @@ async def open_department(
         shared_context = await dep_repo.get_any_context(department_id)
 
     if shared_context:
-        context_preview = (
-            shared_context[:300] + "..."
-            if len(shared_context) > 300
-            else shared_context
-        )
-
-        await callback.message.edit_text(
-            f"📂 <b>{shift_name}</b>\n"
-            f"🏢 {department.name}\n\n"
-            f"<b>Контекст:</b>\n<i>{context_preview}</i>\n\n"
-            "Использовать сохранённый контекст или ввести новый?",
-            reply_markup=context_exists_keyboard(),
-        )
-        await state.set_state(ShiftSelectStates.confirm_context)
+        # Если контекст уже заполнен, не заставляем педагога каждый раз
+        # подтверждать его отдельным экраном. Сразу открываем список детей;
+        # изменить контекст можно кнопкой «✏️ Изменить контекст смены» внизу.
+        await _show_children(callback, user, session, state, department_id)
     else:
         await callback.message.edit_text(
             f"📂 <b>{shift_name}</b>\n"
@@ -614,6 +604,7 @@ async def edit_context_from_list(
     )
     await state.set_state(ShiftSelectStates.entering_context)
     await callback.answer()
+
 
 
 

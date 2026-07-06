@@ -33,11 +33,40 @@ def _export_back_callback(user: User) -> str | None:
 
 
 def _export_menu_for_user(user: User):
-    return export_menu(back_callback=_export_back_callback(user))
+    return export_menu(
+        back_callback=_export_back_callback(user),
+        allow_all_shift=user.role == UserRole.admin,
+    )
 
 
 def _export_mode_menu_for_user(user: User):
-    return export_mode_menu(back_callback=_export_back_callback(user))
+    return export_mode_menu(
+        back_callback=_export_back_callback(user),
+        allow_all_shift=user.role == UserRole.admin,
+    )
+
+
+async def _replace_with_bottom_menu(cb: CallbackQuery, text: str, reply_markup=None):
+    """Показывает актуальное меню последним сообщением в чате.
+
+    В Telegram нельзя «закрепить» inline-клавиатуру снизу, поэтому для меню,
+    с которым пользователь должен продолжать работать, удаляем старое сообщение
+    с кнопками и отправляем новое. Тогда служебные сообщения/файлы остаются выше,
+    а рабочее диалоговое окно оказывается внизу переписки.
+    """
+    try:
+        await cb.message.delete()
+    except Exception:
+        logger.debug("Could not delete previous export menu message", exc_info=True)
+    return await cb.message.answer(text, reply_markup=reply_markup)
+
+
+async def _send_export_bottom_menu(cb: CallbackQuery, user: User) -> None:
+    """После файлов/служебных сообщений возвращает меню экспорта вниз чата."""
+    await cb.message.answer(
+        "📥 <b>Скачать ещё отчёты?</b>",
+        reply_markup=_export_mode_menu_for_user(user),
+    )
 
 
 async def _resolve_shift_context(
@@ -83,7 +112,8 @@ async def _resolve_dep_number(
 @router.callback_query(F.data == "export:menu")
 async def cb_export_menu(cb: CallbackQuery, state: FSMContext, user: User) -> None:
     """Первый шаг скачивания: выбрать один из трёх сценариев."""
-    await cb.message.edit_text(
+    await _replace_with_bottom_menu(
+        cb,
         "📥 <b>Скачать отчёты</b>\n\n"
         "Что вы хотите скачать?",
         reply_markup=_export_mode_menu_for_user(user),
@@ -106,7 +136,20 @@ async def _available_shifts(session: AsyncSession, user: User):
     shift_repo = ShiftRepository(session)
     if user.role == UserRole.admin:
         return list(await shift_repo.get_all_active())
-    return list(await shift_repo.get_for_teacher(user.id))
+
+    # Актуальная модель привязки преподавателя — через departments /
+    # teacher_departments. Legacy teacher_shifts может быть пустой, из-за чего
+    # преподаватель видел «Нет доступных смен для выгрузки» при выборе отчёта
+    # одного ребёнка.
+    departments = await _available_departments(session, user)
+    shift_ids = {d.shift_id for d in departments}
+    shifts = []
+    for shift_id in shift_ids:
+        shift = await shift_repo.get_by_id(shift_id)
+        if shift and shift.is_active:
+            shifts.append(shift)
+    shifts.sort(key=lambda s: s.start_date, reverse=True)
+    return shifts
 
 
 async def _available_departments_for_shift(
@@ -170,6 +213,12 @@ async def cb_export_mode(
     """Выбран режим экспорта → просим выбрать смену."""
     raw_mode = cb.data.split(":")[-1]
     if cb.data == "export:all" or raw_mode in {"shift", "shift_pdf", "all"}:
+        if user.role != UserRole.admin:
+            await cb.answer(
+                "Полная выгрузка смены доступна только администратору.",
+                show_alert=True,
+            )
+            return
         mode = "all"
     elif raw_mode == "department":
         mode = "department"
@@ -194,6 +243,12 @@ async def cb_export_shift(
     mode = data.get("export_mode", "child")
 
     if mode == "all":
+        if user.role != UserRole.admin:
+            await cb.answer(
+                "Полная выгрузка смены доступна только администратору.",
+                show_alert=True,
+            )
+            return
         await cb.message.edit_text(
             f"🏕 <b>Все отчёты смены</b>\n{shift.name}\n\n"
             "Выберите формат архива:",
@@ -360,6 +415,12 @@ async def cb_export_all_format(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
     """Формат выбран для всей смены → собираем ZIP с папками департаментов."""
+    if user.role != UserRole.admin:
+        await cb.answer(
+            "Полная выгрузка смены доступна только администратору.",
+            show_alert=True,
+        )
+        return
     as_pdf = cb.data.split(":")[-1] == "pdf"
     await _export_zip(cb, state, user, session, as_pdf=as_pdf, export_scope="all")
 
@@ -452,6 +513,7 @@ async def _export_single(
             doc_file,
             caption=f"📄 Отчёт: <b>{student.full_name}</b>\n{shift.name}",
         )
+        await _send_export_bottom_menu(cb, user)
 
         logger.info(
             f"Sent {'PDF' if as_pdf else 'PPTX'} for student={student.full_name} "
@@ -486,6 +548,13 @@ async def _export_zip(
     as_pdf: bool,
     export_scope: str,
 ) -> None:
+    if export_scope == "all" and user.role != UserRole.admin:
+        await cb.answer(
+            "Полная выгрузка смены доступна только администратору.",
+            show_alert=True,
+        )
+        return
+
     data = await state.get_data()
     shift_id = data.get("shift_id")
     department_id = data.get("department_id")
@@ -616,6 +685,7 @@ async def _export_zip(
                 f"{failed_caption}"
             ),
         )
+        await _send_export_bottom_menu(cb, user)
         logger.info(
             f"Sent ZIP {archive_name}: {added_count} reports "
             f"to teacher={user.id}"
@@ -633,6 +703,12 @@ async def _export_zip(
 async def cb_export_zip(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
+    if user.role != UserRole.admin:
+        await cb.answer(
+            "Полная выгрузка смены доступна только администратору.",
+            show_alert=True,
+        )
+        return
     await _export_zip(cb, state, user, session, as_pdf=False, export_scope="all")
 
 
@@ -640,4 +716,10 @@ async def cb_export_zip(
 async def cb_export_zip_pdf(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
+    if user.role != UserRole.admin:
+        await cb.answer(
+            "Полная выгрузка смены доступна только администратору.",
+            show_alert=True,
+        )
+        return
     await _export_zip(cb, state, user, session, as_pdf=True, export_scope="all")
