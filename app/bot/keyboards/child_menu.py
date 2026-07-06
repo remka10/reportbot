@@ -23,6 +23,7 @@ def children_keyboard(
     page: int = 0,
     page_size: int = CHILDREN_PAGE_SIZE,
     show_context_button: bool = True,
+    show_back_to_departments: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Список детей с прогресс-индикатором и ПОСТРАНИЧНОЙ навигацией.
@@ -32,6 +33,11 @@ def children_keyboard(
 
     При большом количестве детей показывается только срез (page_size детей на
     страницу) + строка навигации «⬅️ / N/M / ➡️».
+
+    show_back_to_departments — показывать кнопку «Назад к департаментам».
+    Показываем её только когда департаментов больше одного: если департамент
+    единственный, возвращаться некуда (нажатие открыло бы тот же список детей и
+    вызвало бы ошибку «message is not modified» / зависание спиннера).
     """
     builder = InlineKeyboardBuilder()
 
@@ -84,13 +90,15 @@ def children_keyboard(
             )
         )
 
-    # Кнопка возврата к выбору департамента (для админа и педагога).
-    builder.row(
-        InlineKeyboardButton(
-            text="← Назад к департаментам",
-            callback_data="teacher:shifts",
+    # Кнопка возврата к выбору департамента — только если департаментов больше
+    # одного (иначе возвращаться некуда, и кнопка бы зависала).
+    if show_back_to_departments:
+        builder.row(
+            InlineKeyboardButton(
+                text="← Назад к департаментам",
+                callback_data="teacher:shifts",
+            )
         )
-    )
 
     return builder.as_markup()
 

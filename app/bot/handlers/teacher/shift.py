@@ -481,7 +481,12 @@ async def _build_children_view(
     state: FSMContext,
     department_id: int,
 ):
-    """Готовит данные для списка детей департамента."""
+    """Готовит данные для списка детей департамента.
+
+    Возвращает (students, progress_map, finalized_ids, total, multiple_departments),
+    где multiple_departments — True, если у пользователя больше одного
+    доступного департамента (нужно для кнопки «Назад к департаментам»).
+    """
     student_repo = StudentRepository(session)
     answer_repo = AnswerRepository(session)
     report_repo = ReportRepository(session)
@@ -491,8 +496,13 @@ async def _build_children_view(
     shift_id = department.shift_id if department else None
     students = list(await student_repo.get_by_department(department_id))
 
+    # Сколько всего департаментов доступно пользователю — определяет, нужна ли
+    # кнопка возврата к списку департаментов (при единственном возвращаться некуда).
+    all_departments = list(await dep_repo.get_for_teacher(user.id))
+    multiple_departments = len(all_departments) > 1
+
     if not students:
-        return None, None, None, None
+        return None, None, None, None, multiple_departments
 
     student_ids = [s.id for s in students]
     progress_map = await answer_repo.get_progress_map(user.id, student_ids)
@@ -500,9 +510,13 @@ async def _build_children_view(
     all_finalized = await report_repo.get_finalized_student_ids(user.id, shift_id)
     finalized_ids = {sid for sid in all_finalized if sid in set(student_ids)}
 
-    await state.update_data(department_id=department_id, shift_id=shift_id)
+    await state.update_data(
+        department_id=department_id,
+        shift_id=shift_id,
+        multiple_departments=multiple_departments,
+    )
     await state.set_state(ChildSelectStates.choosing_child)
-    return students, progress_map, finalized_ids, len(students)
+    return students, progress_map, finalized_ids, len(students), multiple_departments
 
 
 async def _show_children(
@@ -513,8 +527,8 @@ async def _show_children(
     department_id: int,
     page: int = 0,
 ) -> None:
-    students, progress_map, finalized_ids, total = await _build_children_view(
-        user, session, state, department_id
+    students, progress_map, finalized_ids, total, multiple_departments = (
+        await _build_children_view(user, session, state, department_id)
     )
     if students is None:
         await callback.message.edit_text(
@@ -527,7 +541,10 @@ async def _show_children(
         f"👦 <b>Список детей</b>\n"
         f"Готово: {len(finalized_ids)}/{total} отчётов\n\n"
         "Выберите ребёнка:",
-        reply_markup=children_keyboard(students, progress_map, finalized_ids, page=page),
+        reply_markup=children_keyboard(
+            students, progress_map, finalized_ids, page=page,
+            show_back_to_departments=multiple_departments,
+        ),
     )
 
 
@@ -539,8 +556,8 @@ async def _show_children_message(
     department_id: int,
     page: int = 0,
 ) -> None:
-    students, progress_map, finalized_ids, total = await _build_children_view(
-        user, session, state, department_id
+    students, progress_map, finalized_ids, total, multiple_departments = (
+        await _build_children_view(user, session, state, department_id)
     )
     if students is None:
         await message.answer(
@@ -555,7 +572,10 @@ async def _show_children_message(
         f"👦 <b>Список детей</b>\n"
         f"Готово: {len(finalized_ids)}/{total} отчётов\n\n"
         "Выберите ребёнка:",
-        reply_markup=children_keyboard(students, progress_map, finalized_ids, page=page),
+        reply_markup=children_keyboard(
+            students, progress_map, finalized_ids, page=page,
+            show_back_to_departments=multiple_departments,
+        ),
     )
 
 
