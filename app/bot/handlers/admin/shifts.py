@@ -152,6 +152,34 @@ async def create_shift_dates(
 async def cb_assign_teacher_start(
     cb: CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
+    # Педагог ещё не известен — выбираем его на последнем шаге.
+    await state.update_data(assign_teacher_id=None)
+    await _start_shift_selection(cb, state, session)
+
+
+@router.callback_query(F.data == "admin:users:add:assign")
+async def cb_assign_new_teacher_start(
+    cb: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    """
+    Запуск привязки сразу после добавления педагога.
+    ID нового педагога уже лежит в state (assign_teacher_id) — на шаге
+    выбора департамента привязка выполнится без повторного выбора педагога.
+    """
+    data = await state.get_data()
+    teacher_id = data.get("assign_teacher_id")
+    if not teacher_id:
+        await cb.answer("Педагог не найден, начните заново.", show_alert=True)
+        return
+    await state.set_state(None)
+    await state.update_data(assign_teacher_id=teacher_id)
+    await _start_shift_selection(cb, state, session)
+
+
+async def _start_shift_selection(
+    cb: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    """Показывает список активных смен для привязки педагога."""
     shift_repo = ShiftRepository(session)
     shifts = list(await shift_repo.get_all_active())
     if not shifts:
@@ -204,6 +232,23 @@ async def cb_assign_department_selected(
     from app.repositories.user_repo import UserRepository
     department_id = int(cb.data.split(":")[1])
     await state.update_data(assign_department_id=department_id)
+
+    # Если педагог уже известен (сценарий «сразу после добавления»),
+    # привязываем его без повторного выбора из списка.
+    data = await state.get_data()
+    known_teacher_id = data.get("assign_teacher_id")
+    if known_teacher_id:
+        dep_repo = DepartmentRepository(session)
+        department = await dep_repo.get_by_id(department_id)
+        await dep_repo.assign_teacher(department_id=department_id, teacher_id=known_teacher_id)
+        await state.clear()
+        await cb.message.edit_text(
+            f"✅ Педагог привязан к департаменту "
+            f"<b>{department.emoji + ' ' + department.name if department else department_id}</b>.",
+            parse_mode="HTML",
+            reply_markup=back_keyboard_admin("admin:shifts"),
+        )
+        return
 
     user_repo = UserRepository(session)
     all_teachers = list(await user_repo.get_by_role(UserRole.teacher))

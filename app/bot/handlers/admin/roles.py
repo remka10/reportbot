@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.keyboards.admin_menu import (
     admin_main_menu, users_menu, roles_keyboard, users_list_keyboard,
     back_keyboard, confirm_keyboard, request_user_keyboard, remove_reply_keyboard,
+    assign_new_teacher_keyboard,
 )
 
 from app.bot.states.admin_states import (
@@ -281,22 +282,46 @@ async def add_user_confirm(
     try:
         data = await state.get_data()
         service = UserService(session)
+        role = UserRole(data["role"])
         result = await service.add_user(
             actor=user,
             new_user_id=data["new_user_id"],
-            role=UserRole(data["role"]),
+            role=role,
             username=data.get("new_username"),
             display_name=data.get("new_display_name"),
         )
-        await state.clear()
-        await cb.message.edit_text(
-            result.message,
-            reply_markup=back_keyboard("admin:users"),
-        )
+        if role == UserRole.teacher:
+            # Педагога сразу предлагаем назначить на смену/департамент.
+            # В state оставляем только ID нового педагога для следующего шага.
+            new_teacher_id = data["new_user_id"]
+            await state.clear()
+            await state.update_data(assign_teacher_id=new_teacher_id)
+            await cb.message.edit_text(
+                result.message
+                + "\n\nХотите сразу назначить педагога на смену и департамент?",
+                reply_markup=assign_new_teacher_keyboard(),
+            )
+        else:
+            await state.clear()
+            await cb.message.edit_text(
+                result.message,
+                reply_markup=back_keyboard("admin:users"),
+            )
         await cb.answer()
     except Exception as e:
         logger.exception(f"Error in add_user_confirm: {e}")
         await cb.answer("⚠️ Произошла ошибка. Попробуйте снова.", show_alert=True)
+
+
+@router.callback_query(F.data == "admin:users:add:skip")
+async def cb_add_user_skip(cb: CallbackQuery, state: FSMContext, user: User) -> None:
+    """Пропустить назначение только что добавленного педагога на смену/департамент."""
+    await state.clear()
+    await cb.message.edit_text(
+        "👥 <b>Управление пользователями</b>",
+        reply_markup=users_menu(is_admin=user.role == UserRole.admin),
+    )
+    await cb.answer()
 
 
 
@@ -443,4 +468,3 @@ async def deactivate_confirm(
     except Exception as e:
         logger.exception(f"Error in deactivate_confirm: {e}")
         await cb.answer("⚠️ Произошла ошибка. Попробуйте снова.", show_alert=True)
-

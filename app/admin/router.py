@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.base import get_session
+from app.services import model_settings
+
 from app.database.models import (
     Answer,
     DEPARTMENTS,
@@ -124,6 +126,12 @@ class AnswerUpdate(BaseModel):
 class ReportUpdate(BaseModel):
     generated_text: Optional[str] = None
     is_finalized: Optional[bool] = None
+
+
+class ModelChoiceUpdate(BaseModel):
+    area: str = Field(..., description="Область переключения: generation | context")
+    choice: str = Field(..., description="Ключ модели: gemini | haiku")
+
 
 
 def dt(value: Any) -> str | None:
@@ -554,8 +562,25 @@ async def update_report(report_id: int, payload: ReportUpdate, session: AsyncSes
     return {"ok": True}
 
 
+@router.get("/api/models", dependencies=[AdminOnly])
+async def get_models() -> dict[str, Any]:
+    """Текущий выбор нейросетей и доступные опции для быстрой смены."""
+    return model_settings.snapshot()
+
+
+@router.patch("/api/models", dependencies=[AdminOnly])
+async def update_model(payload: ModelChoiceUpdate) -> dict[str, Any]:
+    """Быстрое переключение нейросети для области generation | context."""
+    try:
+        model_settings.set_choice(payload.area, payload.choice)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return model_settings.snapshot()
+
+
 @router.get("/api/logs", dependencies=[AdminOnly])
 async def logs(level: str = "") -> list[dict[str, Any]]:
+
     level = level.upper().strip()
     if not level:
         return list(MEMORY_LOGS)

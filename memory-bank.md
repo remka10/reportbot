@@ -12,7 +12,8 @@ Telegram-бот для педагогов летнего лагеря. Роли:
 
 ## 2. Стек
 
-FastAPI (только lifespan + `/health`, апдейты НЕ через FastAPI) · aiogram 3.7.0 **long-polling** (webhook не используется, исторически был нестабилен на 443) · SQLAlchemy 2.0 async · Alembic · PostgreSQL 15 · LLM: Gemini 2.5 Flash через AiTunnel (OpenAI-совместимый API, base_url `https://api.aitunnel.ru/v1`) · STT: Whisper (`whisper-1`) через AiTunnel · docxtpl / python-pptx для документов · Docker Compose (bot/db/nginx/certbot) · nginx reverse proxy · Let's Encrypt SSL.
+FastAPI (только lifespan + `/health`, апдейты НЕ через FastAPI) · aiogram 3.7.0 **long-polling** (webhook не используется, исторически был нестабилен на 443) · SQLAlchemy 2.0 async · Alembic · PostgreSQL 15 · LLM: переключаемо Gemini 2.5 Flash / Claude Haiku 4.5 через AiTunnel (OpenAI-совместимый API, base_url `https://api.aitunnel.ru/v1`) · STT: Whisper (`whisper-1`) через AiTunnel · docxtpl / python-pptx для документов · Docker Compose (bot/db/nginx/certbot) · nginx reverse proxy · Let's Encrypt SSL.
+
 
 Python 3.11, весь код async/await.
 
@@ -140,7 +141,10 @@ async def handler_name(cb: CallbackQuery, state: FSMContext, user: User, session
 
 ## 11. Сервисы (детали)
 
-LLMService: AsyncOpenAI c base_url AiTunnel, модель settings.gemini_model. generate_report(qa_pairs, shift_context, student_name), revise_report(revision_request, history), clean_stt, beautify_shift_context(raw_context) (оформляет контекст в стиле "Летово Игра"), revise_shift_context(previous_context, comment).
+LLMService: AsyncOpenAI c base_url AiTunnel. Модель выбирается динамически через `app/services/model_settings.py` (get_model): область "generation" → generate_report/revise_report, область "context" → beautify_shift_context/revise_shift_context. clean_stt_transcription (правки расшифровок Whisper) ВСЕГДА на settings.gemini_model, не переключается. generate_report(qa_pairs, shift_context, student_name), revise_report(revision_request, history), clean_stt, beautify_shift_context(raw_context) (оформляет контекст в стиле "Летово Игра"), revise_shift_context(previous_context, comment).
+
+**model_settings.py**: лёгкое персистентное хранилище выбора LLM (без alembic-миграции). Кэш в модуле + дублирование в JSON `REPORTS_DIR/model_settings.json` (переживает рестарт). Опции: "gemini" (Gemini 2.5 Flash) / "haiku" (Claude Haiku 4.5). Две области: generation, context (дефолт обеих — gemini). API: get_choice(kind), get_model(kind), set_choice(kind, choice), snapshot(). Реальные id моделей берутся из settings (gemini_model / haiku_model). Переключение — из веб-панели /admin (раздел «Нейросети», GET/PATCH `/admin/api/models`).
+
 
 STTService: AiTunnel, модель settings.whisper_model. transcribe_voice(voice, bot). Лимит settings.max_audio_size_mb=20 → ValueError при превышении.
 
@@ -150,7 +154,8 @@ ZipService: пакует отчёты в ZIP, create_zip(as_pdf=bool).
 
 ## 12. Конфигурация (app/config.py)
 
-pydantic-settings, читает .env. Доступ: `from app.config import settings` или `get_settings()` (lru_cache). Поля: telegram_bot_token, webhook_url (не используется, historical), admin_telegram_id, database_url, aitunnel_api_key, aitunnel_base_url, gemini_model, whisper_model, debug, log_level, max_audio_size_mb, reports_dir (default /app/reports).
+pydantic-settings, читает .env. Доступ: `from app.config import settings` или `get_settings()` (lru_cache). Поля: telegram_bot_token, webhook_url (не используется, historical), admin_telegram_id, database_url, aitunnel_api_key, aitunnel_base_url, gemini_model, haiku_model (Claude Haiku 4.5, id через .env HAIKU_MODEL), whisper_model, debug, log_level, max_audio_size_mb, reports_dir (default /app/reports), admin_panel_username, admin_panel_password.
+
 
 ## 13. Работа с БД
 
@@ -162,7 +167,8 @@ pydantic-settings, читает .env. Доступ: `from app.config import sett
 
 ## 15. AiTunnel API
 
-Base URL `https://api.aitunnel.ru/v1` (OpenAI-совместимый). LLM: gemini-2.5-flash. STT: whisper-1. Таймаут httpx: 120с LLM, 60с STT. При ошибке — всегда уведомлять пользователя, не зависать.
+Base URL `https://api.aitunnel.ru/v1` (OpenAI-совместимый). LLM: переключаемо gemini-2.5-flash / claude-haiku-4.5 (см. model_settings). STT: whisper-1. Таймаут httpx: 120с LLM, 60с STT. При ошибке — всегда уведомлять пользователя, не зависать.
+
 
 ## 16. Что не трогать
 
@@ -189,7 +195,9 @@ DB_PASSWORD=
 AITUNNEL_API_KEY=sk-aitunnel-...
 AITUNNEL_BASE_URL=https://api.aitunnel.ru/v1
 GEMINI_MODEL=gemini-2.5-flash
+HAIKU_MODEL=claude-haiku-4.5
 WHISPER_MODEL=whisper-1
+
 DEBUG=false
 LOG_LEVEL=INFO
 MAX_AUDIO_SIZE_MB=20

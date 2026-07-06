@@ -25,6 +25,8 @@ class Settings(BaseSettings):
 
     # Models
     gemini_model: str = "gemini-2.5-flash"
+    # Claude Haiku 4.5 через AiTunnel. id уточняется через .env (HAIKU_MODEL).
+    haiku_model: str = "claude-haiku-4.5"
     whisper_model: str = "whisper-1"
 
     # App

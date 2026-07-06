@@ -3,6 +3,8 @@ import logging
 import httpx
 from openai import AsyncOpenAI
 from app.config import get_settings
+from app.services import model_settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +50,7 @@ SYSTEM_PROMPT_GENERATION = """
 === ИТОГОВЫЙ ОТЧЁТ ===
 
 После неё — короткий, цельный и связный педагогический отчёт на ребёнка
-(СТРОГО 120–180 слов, 1-2 небольших абзаца). Отчёт должен быть ёмким: лучше
+(СТРОГО 120–180 слов, 2-4 небольших абзаца). Отчёт должен быть ёмким: лучше
 меньше слов, но по существу.
 
 ТРЕБОВАНИЯ:
@@ -92,7 +94,7 @@ SYSTEM_PROMPT_BEAUTIFY_CONTEXT = """
 - Сохрани ВСЕ конкретные факты, события и детали из надиктованного текста.
 - ЗАПРЕЩЕНО выдумывать события, которых не было в исходном тексте.
 - Органично впиши сюжет департамента в мир «Летово Игры» / «Корпорации Летово».
-- Объём: 1–2 связных абзаца (примерно 100–200 слов).
+- Объём: 2–3 связных абзаца (примерно 100–200 слов).
 - Верни ТОЛЬКО готовый текст контекста, без заголовков и пояснений.
 """
 
@@ -112,7 +114,7 @@ SYSTEM_PROMPT_REVISE_CONTEXT = """
 - Сохрани факты и детали из прежнего текста, которые педагог не просил менять.
 - ЗАПРЕЩЕНО выдумывать события, которых не было и о которых не просил педагог.
 - Пиши литературным русским языком, тепло и живо, без канцелярита и штампов.
-- Объём: 1–2 связных абзаца (примерно 100–200 слов).
+- Объём: 2–3 связных абзаца (примерно 100–200 слов).
 - Верни ТОЛЬКО готовый исправленный текст контекста, без заголовков и пояснений.
 """
 
@@ -169,7 +171,9 @@ def _format_qa_pairs(qa_pairs: list[dict]) -> str:
 class LLMService:
     def __init__(self) -> None:
         self.client = _make_client()
-        self.model = get_settings().gemini_model
+        # Whisper-правки всегда идут на Gemini, независимо от переключателя.
+        self.stt_clean_model = get_settings().gemini_model
+
 
     async def generate_report(
         self,
@@ -183,9 +187,10 @@ class LLMService:
             shift_context=shift_context or "Контекст смены не указан.",
             qa_pairs=qa_formatted,
         )
-        logger.info(f"Generating report for {student_name!r}, {len(qa_pairs)} QA pairs")
+        model = model_settings.get_model("generation")
+        logger.info(f"Generating report for {student_name!r}, {len(qa_pairs)} QA pairs (model={model})")
         response = await self.client.chat.completions.create(
-            model=self.model,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Напиши педагогический отчёт на ребёнка: {student_name}"},
@@ -197,6 +202,7 @@ class LLMService:
         logger.info(f"Report generated: {len(text)} chars for {student_name!r}")
         return text.strip()
 
+
     async def beautify_shift_context(self, raw_context: str) -> str:
         """
         Превращает сырой (надиктованный) контекст смены в красивый связный текст,
@@ -205,9 +211,10 @@ class LLMService:
         system_prompt = SYSTEM_PROMPT_BEAUTIFY_CONTEXT.format(
             camp_context=CAMP_CONTEXT.strip(),
         )
-        logger.info(f"Beautifying shift context: {len(raw_context)} chars in")
+        model = model_settings.get_model("context")
+        logger.info(f"Beautifying shift context: {len(raw_context)} chars in (model={model})")
         response = await self.client.chat.completions.create(
-            model=self.model,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {
@@ -215,6 +222,7 @@ class LLMService:
                     "content": (
                         "Вот черновой контекст смены, оформи его:\n\n"
                         f"{raw_context}"
+
                     ),
                 },
             ],
@@ -241,14 +249,16 @@ class LLMService:
             f"Revising shift context: prev={len(previous_context)} chars, "
             f"comment={len(comment)} chars"
         )
+        model = model_settings.get_model("context")
         response = await self.client.chat.completions.create(
-            model=self.model,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": (
                         "Текущий вариант контекста смены:\n\n"
+
                         f"{previous_context}\n\n"
                         "Комментарий педагога — что нужно исправить:\n\n"
                         f"{comment}"
@@ -270,11 +280,13 @@ class LLMService:
         messages = [{"role": "system", "content": SYSTEM_PROMPT_REVISION}]
         messages.extend(revision_history)
         messages.append({"role": "user", "content": revision_request})
-        logger.info(f"Revising report: history_len={len(revision_history)}")
+        model = model_settings.get_model("generation")
+        logger.info(f"Revising report: history_len={len(revision_history)} (model={model})")
         response = await self.client.chat.completions.create(
-            model=self.model,
+            model=model,
             messages=messages,
             temperature=0.6,
+
             max_tokens=2000,
         )
         text = response.choices[0].message.content or ""
@@ -287,9 +299,11 @@ class LLMService:
         question_text: str,
     ) -> str:
         system_prompt = SYSTEM_PROMPT_STT_CLEAN.format(question_text=question_text)
+        # Правки Whisper всегда на Gemini — не зависят от переключателя моделей.
         response = await self.client.chat.completions.create(
-            model=self.model,
+            model=self.stt_clean_model,
             messages=[
+
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": raw_transcription},
             ],
