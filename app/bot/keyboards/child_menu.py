@@ -84,6 +84,14 @@ def children_keyboard(
             )
         )
 
+    # Кнопка возврата к выбору департамента (для админа и педагога).
+    builder.row(
+        InlineKeyboardButton(
+            text="← Назад к департаментам",
+            callback_data="teacher:shifts",
+        )
+    )
+
     return builder.as_markup()
 
 
@@ -95,18 +103,18 @@ def question_keyboard(
 ) -> InlineKeyboardMarkup:
     """Навигация по вопросам. Ответ принимается голосом или текстом
     прямо в чат (без отдельной кнопки)."""
-    # Навигация
+    # Навигация между вопросами
     nav_row = []
     if has_prev and current_num > 1:
         nav_row.append(
-            InlineKeyboardButton(text="← Назад", callback_data=f"q:prev:{current_num - 1}")
+            InlineKeyboardButton(text="← Пред. вопрос", callback_data=f"q:prev:{current_num - 1}")
         )
     nav_row.append(
         InlineKeyboardButton(text="📋 Список", callback_data="q:list")
     )
     if current_num < total:
         nav_row.append(
-            InlineKeyboardButton(text="→ Вперёд", callback_data=f"q:next:{current_num + 1}")
+            InlineKeyboardButton(text="→ След. вопрос", callback_data=f"q:next:{current_num + 1}")
         )
 
     return InlineKeyboardMarkup(
@@ -115,6 +123,12 @@ def question_keyboard(
                 InlineKeyboardButton(text="⏭ Пропустить", callback_data="q:skip"),
             ],
             nav_row,
+            [
+                InlineKeyboardButton(
+                    text="← Назад к списку детей",
+                    callback_data="teacher:child_list",
+                ),
+            ],
         ]
     )
 
@@ -133,7 +147,8 @@ def questions_list_keyboard(
             text=f"{icon} {q.question_number}. {short_text}...",
             callback_data=f"q:goto:{q.question_number}",
         )
-    builder.button(text="← Назад", callback_data="q:back")
+    builder.button(text="← Назад к вопросу", callback_data="q:back")
+    builder.button(text="👦 К списку детей", callback_data="teacher:child_list")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -212,6 +227,12 @@ def report_review_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="✏️ Исправить текст",
                     callback_data="report:revise",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👦 К списку детей",
+                    callback_data="teacher:child_list",
                 ),
             ],
         ]

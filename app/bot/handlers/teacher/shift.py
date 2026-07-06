@@ -90,7 +90,13 @@ async def _beautify_and_preview(
 async def show_departments(
     callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
 ) -> None:
-    """Показывает список департаментов педагога (по всем его сменам)."""
+    """Показывает список департаментов педагога (по всем его сменам).
+
+    Если педагог привязан всего к одному департаменту — этап выбора
+    пропускается, и сразу открывается его единственный департамент.
+    Если все департаменты принадлежат одной смене — выбор смены не нужен,
+    показываем только список департаментов без префикса смены в подписи.
+    """
     await state.clear()
     dep_repo = DepartmentRepository(session)
     shift_repo = ShiftRepository(session)
@@ -104,12 +110,26 @@ async def show_departments(
         await callback.answer()
         return
 
-    # Карта shift_id -> название смены (для подписи кнопок)
-    shift_name_map: dict[int, str] = {}
-    for d in departments:
-        if d.shift_id not in shift_name_map:
-            shift = await shift_repo.get_by_id(d.shift_id)
-            shift_name_map[d.shift_id] = shift.name if shift else f"Смена {d.shift_id}"
+    # Единственный департамент — сразу открываем его, без выбора смены/департамента.
+    if len(departments) == 1:
+        await open_department(callback, user, session, state, departments[0].id)
+        return
+
+    # Определяем, в скольких сменах работает педагог.
+    shift_ids = {d.shift_id for d in departments}
+    single_shift = len(shift_ids) == 1
+
+    shift_name_map: dict[int, str] | None
+    if single_shift:
+        # Все департаменты в одной смене → не показываем название смены в кнопках.
+        shift_name_map = None
+    else:
+        # Педагог работает в нескольких сменах → подписываем департаменты сменой.
+        shift_name_map = {}
+        for d in departments:
+            if d.shift_id not in shift_name_map:
+                shift = await shift_repo.get_by_id(d.shift_id)
+                shift_name_map[d.shift_id] = shift.name if shift else f"Смена {d.shift_id}"
 
     await callback.message.edit_text(
         "📂 <b>Ваши департаменты</b>\n\nВыберите департамент для работы:",
@@ -604,7 +624,3 @@ async def edit_context_from_list(
     )
     await state.set_state(ShiftSelectStates.entering_context)
     await callback.answer()
-
-
-
-

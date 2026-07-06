@@ -18,17 +18,25 @@ def shifts_keyboard(shifts: list[Shift]) -> InlineKeyboardMarkup:
 
 def departments_keyboard(
     departments: list[Department],
-    shift_name_map: dict[int, str],
+    shift_name_map: dict[int, str] | None = None,
 ) -> InlineKeyboardMarkup:
     """
-    Список департаментов педагога с указанием смены:
-    «📂 Смена 1 2026 — Департамент управления».
+    Список департаментов педагога.
+
+    Если передан ``shift_name_map`` (педагог работает в нескольких сменах),
+    в подписи кнопки указывается смена: «📂 Смена 1 2026 — Департамент
+    управления». Если ``shift_name_map`` == None (все департаменты в одной
+    смене), показываем только название департамента без префикса смены.
     """
     builder = InlineKeyboardBuilder()
     for d in departments:
-        shift_name = shift_name_map.get(d.shift_id, f"Смена {d.shift_id}")
+        if shift_name_map is not None:
+            shift_name = shift_name_map.get(d.shift_id, f"Смена {d.shift_id}")
+            text = f"{d.emoji} {shift_name} — {d.name}"
+        else:
+            text = f"{d.emoji} {d.name}"
         builder.button(
-            text=f"{d.emoji} {shift_name} — {d.name}",
+            text=text,
             callback_data=f"teacher:department:{d.id}",
         )
     builder.adjust(1)
@@ -98,6 +106,3 @@ def context_preview_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
-
-
-
