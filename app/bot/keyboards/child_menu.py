@@ -192,7 +192,7 @@ def generate_report_keyboard() -> InlineKeyboardMarkup:
 
 
 def finalized_report_keyboard() -> InlineKeyboardMarkup:
-    """Меню для уже финализированного отчёта: посмотреть / скачать / перегенерировать."""
+    """Меню для уже финализированного отчёта: посмотреть / скачать / исправить."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -209,6 +209,12 @@ def finalized_report_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="📕 Скачать PDF",
                     callback_data="export:single_pdf",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Редактировать вручную",
+                    callback_data="report:manual_edit",
                 ),
             ],
             [
@@ -241,6 +247,12 @@ def report_review_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="✏️ Исправить текст",
                     callback_data="report:revise",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⌨️ Редактировать вручную",
+                    callback_data="report:manual_edit",
                 ),
             ],
             [

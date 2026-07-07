@@ -259,11 +259,93 @@ async def cb_finalize_report(
 
 @router.callback_query(GenerationStates.reviewing, F.data == "report:revise")
 async def cb_request_revision(cb: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    current_text = ""
+    report_id = data.get("report_id")
+    if report_id:
+        # Полный текст отчёта показывается перед LLM-правкой, чтобы педагог видел,
+        # что именно он просит изменить.
+        # session здесь нет, поэтому используем только сохранённый в FSM текст при наличии.
+        current_text = data.get("current_report_text", "")
     await state.set_state(GenerationStates.waiting_revision)
-    await cb.message.answer(
+    text = (
         "✏️ <b>Напишите что нужно исправить</b>\n\n"
         "Например: «Сделай тон более тёплым» или «Добавь про командную работу»\n\n"
         "Можно написать текстом или отправить <b>голосовое сообщение</b> 🎤"
+    )
+    if current_text:
+        text = f"📄 <b>Текущий полный текст отчёта:</b>\n\n<blockquote>{current_text}</blockquote>\n\n" + text
+    await cb.message.answer(text)
+
+
+@router.callback_query(F.data == "report:manual_edit")
+async def cb_manual_edit_report(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Ручное редактирование полного текста отчёта, включая финализированный."""
+    data = await state.get_data()
+    report_id = data.get("report_id")
+    student_id = data.get("student_id")
+    shift_id = data.get("shift_id")
+    student_name = data.get("student_name", "—")
+
+    report_repo = ReportRepository(session)
+    report = await report_repo.get_by_id(report_id) if report_id else None
+    if report is None and student_id and shift_id:
+        report = await report_repo.get_by_student(user.id, student_id, shift_id)
+    if report is None or not (report.generated_text or "").strip():
+        await cb.answer("⚠️ Отчёт не найден", show_alert=True)
+        return
+
+    await state.update_data(report_id=report.id, current_report_text=report.generated_text)
+    await state.set_state(GenerationStates.manual_editing)
+    await cb.answer()
+    parts = _split_text(report.generated_text)
+    await cb.message.answer(f"📄 <b>Полный текст отчёта для {student_name}:</b>")
+    for part in parts:
+        await cb.message.answer(part)
+    await cb.message.answer(
+        "⌨️ <b>Отправьте новым сообщением полный исправленный текст отчёта.</b>\n\n"
+        "Он заменит текущую версию целиком. Можно редактировать даже финализированный отчёт."
+    )
+
+
+@router.message(GenerationStates.manual_editing, F.text)
+async def manual_edit_text(
+    message: Message, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    new_text = (message.text or "").strip()
+    if len(new_text) < 10:
+        await message.answer("⚠️ Текст слишком короткий. Отправьте полный текст отчёта.")
+        return
+    data = await state.get_data()
+    report_id = data.get("report_id")
+    student_name = data.get("student_name", "—")
+    if not report_id:
+        await message.answer("⚠️ Ошибка: отчёт не найден.")
+        return
+
+    report_repo = ReportRepository(session)
+    ok = await report_repo.update_text(report_id, new_text)
+    if not ok:
+        await message.answer("⚠️ Не удалось сохранить отчёт.")
+        return
+    await report_repo.add_revision_message(
+        report_id=report_id,
+        role=DialogRole.user,
+        content="Ручное редактирование полного текста отчёта",
+    )
+    await report_repo.add_revision_message(
+        report_id=report_id,
+        role=DialogRole.assistant,
+        content=new_text,
+    )
+    await state.update_data(current_report_text=new_text)
+    await state.set_state(GenerationStates.reviewing)
+    await message.answer(
+        f"✅ Полный текст отчёта для <b>{student_name}</b> сохранён.\n\n"
+        "Можно сохранить/финализировать, исправить ещё или вернуться к списку детей.",
+        reply_markup=report_review_keyboard(),
     )
 
 
@@ -425,6 +507,7 @@ async def cb_teacher_export_redirect(
         reply_markup=export_mode_menu(),
     )
     await cb.answer()
+
 
 
 

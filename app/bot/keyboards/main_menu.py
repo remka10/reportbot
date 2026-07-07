@@ -31,6 +31,12 @@ def after_finalize_menu(done: int, total: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="✏️ Редактировать отчёт",
+                    callback_data="report:manual_edit",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="➡️ Следующий ребёнок",
                     callback_data="teacher:next_child",
                 )
@@ -185,6 +191,7 @@ def export_children_keyboard(
 
     builder.row(InlineKeyboardButton(text="← Назад", callback_data=back_callback))
     return builder.as_markup()
+
 
 
 

@@ -549,7 +549,8 @@ async def _show_children(
     await state.update_data(child_page=page)
     await callback.message.edit_text(
         f"👦 <b>Список детей</b>\n"
-        f"Готово: {len(finalized_ids)}/{total} отчётов\n\n"
+        f"Готово: {len(finalized_ids)}/{total} отчётов\n"
+        "Прогресс у ребёнка: отвечено вопросов из 13.\n\n"
         "Выберите ребёнка:",
         reply_markup=children_keyboard(
             students, progress_map, finalized_ids, page=page,
@@ -580,7 +581,8 @@ async def _show_children_message(
     await message.answer(
         f"✅ Контекст сохранён!\n\n"
         f"👦 <b>Список детей</b>\n"
-        f"Готово: {len(finalized_ids)}/{total} отчётов\n\n"
+        f"Готово: {len(finalized_ids)}/{total} отчётов\n"
+        "Прогресс у ребёнка: отвечено вопросов из 13.\n\n"
         "Выберите ребёнка:",
         reply_markup=children_keyboard(
             students, progress_map, finalized_ids, page=page,

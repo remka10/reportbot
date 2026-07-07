@@ -40,7 +40,11 @@ async def cb_child_selected(
     data = await state.get_data()
     report = await report_repo.get_by_student(user.id, student_id, data.get("shift_id"))
     if report and report.is_finalized:
-        await state.update_data(student_id=student_id, student_name=student.full_name)
+        await state.update_data(
+            student_id=student_id,
+            student_name=student.full_name,
+            report_id=report.id,
+        )
         await cb.message.edit_text(
             f"✅ Отчёт для <b>{student.full_name}</b> уже финализирован.\n"
             "Хотите посмотреть, скачать или сгенерировать заново?",

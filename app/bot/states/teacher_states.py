@@ -27,4 +27,5 @@ class GenerationStates(StatesGroup):
     generating = State()
     reviewing = State()
     waiting_revision = State()
+    manual_editing = State()
     finalized = State()
