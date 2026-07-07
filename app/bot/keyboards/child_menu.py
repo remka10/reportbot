@@ -19,7 +19,7 @@ def children_keyboard(
     students: list[Student],
     progress_map: dict[int, int],   # student_id -> кол-во отвеченных вопросов
     finalized_ids: set[int],         # student_id финализированных отчётов
-    total_questions: int = 19,
+    total_questions: int = 13,
     page: int = 0,
     page_size: int = CHILDREN_PAGE_SIZE,
     show_context_button: bool = True,
@@ -30,6 +30,9 @@ def children_keyboard(
     ✅ = отчёт финализирован
     ⏳ = есть ответы, но не финализирован
     ⬜ = не начат
+
+    На кнопке ребёнка показывается счётчик заполненных вопросов «(N/13)»
+    (для финализированных отчётов вместо счётчика — «готово»).
 
     При большом количестве детей показывается только срез (page_size детей на
     страницу) + строка навигации «⬅️ / N/M / ➡️».
@@ -48,13 +51,16 @@ def children_keyboard(
         answered = progress_map.get(student.id, 0)
         if student.id in finalized_ids:
             icon = "✅"
+            counter = "готово"
         elif answered > 0:
             icon = "⏳"
+            counter = f"{answered}/{total_questions}"
         else:
             icon = "⬜"
+            counter = f"0/{total_questions}"
 
         builder.button(
-            text=f"{icon} {student.full_name}",
+            text=f"{icon} {student.full_name} ({counter})",
             callback_data=f"teacher:child:{student.id}",
         )
     builder.adjust(1)
@@ -135,12 +141,39 @@ def question_keyboard(
             nav_row,
             [
                 InlineKeyboardButton(
+                    text="🚀 Сгенерировать отчёт",
+                    callback_data="teacher:generate_check",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="← Назад к списку детей",
                     callback_data="teacher:child_list",
                 ),
             ],
         ]
     )
+
+
+def confirm_generate_keyboard(answered: int, total: int) -> InlineKeyboardMarkup:
+    """Подтверждение генерации отчёта, когда заполнены не все вопросы."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🚀 Да, сгенерировать",
+                    callback_data="teacher:generate",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="↩️ Продолжить заполнение",
+                    callback_data="q:back",
+                ),
+            ],
+        ]
+    )
+
 
 
 

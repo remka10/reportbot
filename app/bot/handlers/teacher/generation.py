@@ -5,7 +5,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.keyboards.child_menu import report_review_keyboard, generate_report_keyboard
+from app.bot.keyboards.child_menu import (
+    report_review_keyboard,
+    generate_report_keyboard,
+    confirm_generate_keyboard,
+)
+from app.repositories.question_repo import QuestionRepository
+
 from app.bot.keyboards.main_menu import after_finalize_menu, export_mode_menu
 
 from app.bot.states.teacher_states import GenerationStates, QuestionStates
@@ -47,11 +53,49 @@ def _split_text(text: str, max_len: int = TG_MAX_TEXT) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Проверка перед генерацией: все ли вопросы заполнены
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "teacher:generate_check")
+async def cb_generate_check(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Кнопка «Сгенерировать отчёт» с экрана вопросов.
+
+    Если заполнены НЕ все вопросы — спрашиваем подтверждение. Если все —
+    сразу запускаем генерацию.
+    """
+    data = await state.get_data()
+    student_id = data.get("student_id")
+    if not student_id:
+        await cb.answer("Сначала выберите ребёнка.", show_alert=True)
+        return
+
+    q_repo = QuestionRepository(session)
+    answer_repo = AnswerRepository(session)
+    total = len(list(await q_repo.get_all_active()))
+    answered = await answer_repo.count_answered(user.id, student_id)
+
+    if answered < total:
+        await cb.answer()
+        await cb.message.answer(
+            f"⚠️ <b>Заполнены не все вопросы: {answered}/{total}.</b>\n\n"
+            "Вы уверены, что хотите сгенерировать отчёт сейчас?",
+            reply_markup=confirm_generate_keyboard(answered, total),
+        )
+        return
+
+    # Все вопросы заполнены — запускаем генерацию сразу.
+    await cb_generate_report(cb, state, user, session)
+
+
+# ---------------------------------------------------------------------------
 # Запуск генерации
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "teacher:generate")
 async def cb_generate_report(
+
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
     data = await state.get_data()
