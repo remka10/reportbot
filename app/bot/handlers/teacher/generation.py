@@ -24,6 +24,10 @@ router = Router(name="teacher_generation")
 
 TG_MAX_TEXT = 4000
 
+# Разделитель между блоком ответов на вопросы (1..13) и итоговым отчётом.
+REPORT_MARKER = "=== ИТОГОВЫЙ ОТЧЁТ ==="
+
+
 
 def _split_text(text: str, max_len: int = TG_MAX_TEXT) -> list[str]:
     """Разбивает длинный текст на части для отправки в Telegram."""
@@ -148,16 +152,27 @@ async def cb_generate_report(
 # Просмотр уже сохранённого отчёта
 # ---------------------------------------------------------------------------
 
+def _split_report(text: str) -> tuple[str, str]:
+    """Разбивает отчёт на (блок ответов 1..13, итоговый отчёт) по разделителю.
+
+    Если разделитель не найден — считаем, что блока ответов нет, а весь текст
+    является итоговым отчётом.
+    """
+    if not text:
+        return "", ""
+    idx = text.find(REPORT_MARKER)
+    if idx == -1:
+        return "", text.strip()
+    answers = text[:idx].strip()
+    final = text[idx + len(REPORT_MARKER):].strip()
+    return answers, final
+
+
 def _extract_final_report(text: str) -> str:
     """Возвращает итоговый отчёт (часть после «=== ИТОГОВЫЙ ОТЧЁТ ===»),
     либо весь текст, если разделитель не найден."""
-    if not text:
-        return ""
-    marker = "=== ИТОГОВЫЙ ОТЧЁТ ==="
-    idx = text.find(marker)
-    if idx != -1:
-        return text[idx + len(marker):].strip()
-    return text.strip()
+    return _split_report(text)[1] or (text or "").strip()
+
 
 
 @router.callback_query(F.data == "report:view")
@@ -306,6 +321,13 @@ async def _apply_revision(
     report_repo = ReportRepository(session)
 
     try:
+        # Текущий (актуальный) текст отчёта — из него берём блок ответов 1..13,
+        # чтобы он не потерялся при правке итогового отчёта.
+        current_report = await report_repo.get_by_id(report_id)
+        prev_answers, _ = _split_report(
+            current_report.generated_text if current_report else ""
+        )
+
         await report_repo.add_revision_message(
             report_id=report_id,
             role=DialogRole.user,
@@ -325,6 +347,15 @@ async def _apply_revision(
             revision_history=history_messages,
             revision_request=revision_request,
         )
+
+        # Гарантия сохранности ответов: если у отчёта был блок ответов 1..13,
+        # но модель его не вернула (потеряла/обрезала), пересобираем полный текст
+        # из сохранённого блока ответов + свежего итогового отчёта.
+        new_answers, new_final = _split_report(revised_text)
+        if prev_answers and not new_answers:
+            final_part = new_final or revised_text.strip()
+            revised_text = f"{prev_answers}\n\n{REPORT_MARKER}\n\n{final_part}"
+
         await report_repo.update_text(report_id, revised_text)
         await report_repo.add_revision_message(
             report_id=report_id,
@@ -334,6 +365,7 @@ async def _apply_revision(
         await state.set_state(GenerationStates.reviewing)
         await status_msg.delete()
         parts = _split_text(revised_text)
+
         for i, part in enumerate(parts):
             if i < len(parts) - 1:
                 await message.answer(part)
