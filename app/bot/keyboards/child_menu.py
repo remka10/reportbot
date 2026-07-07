@@ -148,7 +148,7 @@ def question_keyboard(
             nav_row,
             [
                 InlineKeyboardButton(
-                    text="🚀 Сгенерировать отчёт",
+                    text="✅ Завершить и сформировать отчёт",
                     callback_data="teacher:generate_check",
                 ),
             ],
