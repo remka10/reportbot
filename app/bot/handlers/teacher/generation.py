@@ -9,7 +9,7 @@ from app.bot.keyboards.child_menu import report_review_keyboard, generate_report
 from app.bot.keyboards.main_menu import after_finalize_menu, export_mode_menu
 
 from app.bot.states.teacher_states import GenerationStates, QuestionStates
-from app.database.models import User, DialogRole
+from app.database.models import User, DialogRole, get_department_name
 from app.repositories.answer_repo import AnswerRepository
 from app.repositories.report_repo import ReportRepository
 from app.repositories.shift_repo import ShiftRepository
@@ -86,6 +86,7 @@ async def cb_generate_report(
         shift_context = ""
         if department_id:
             dep_repo = DepartmentRepository(session)
+            department = await dep_repo.get_by_id(department_id)
             td = await dep_repo.get_teacher_department(user.id, department_id)
             shift_context = (td.shift_context if td else "") or ""
             # Фолбэк: контекст мог заполнить другой аккаунт по этому департаменту.
@@ -94,6 +95,12 @@ async def cb_generate_report(
         if not shift_context:
             ts = await shift_repo.get_teacher_shift(user.id, shift_id)
             shift_context = (ts.shift_context if ts else "") or ""
+
+        if department_id and department:
+            shift_context = (
+                f"Департамент: {get_department_name(department.department_number)}\n\n"
+                f"{shift_context}"
+            ).strip()
 
 
 
@@ -418,5 +425,6 @@ async def cb_teacher_export_redirect(
         reply_markup=export_mode_menu(),
     )
     await cb.answer()
+
 
 

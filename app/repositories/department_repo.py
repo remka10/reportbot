@@ -145,4 +145,15 @@ class DepartmentRepository:
         await self.session.flush()
         return True
 
+    async def clear_context(self, department_id: int) -> bool:
+        """Полностью удаляет общий контекст департамента у всех привязок."""
+        await self.session.execute(
+            update(TeacherDepartment)
+            .where(TeacherDepartment.department_id == department_id)
+            .values(shift_context=None)
+        )
+        await self.session.flush()
+        return True
+
+
 

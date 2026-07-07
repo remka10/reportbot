@@ -12,7 +12,7 @@ from app.bot.keyboards.shift_menu import (
 )
 from app.bot.keyboards.child_menu import children_keyboard
 from app.bot.states.teacher_states import ShiftSelectStates, ChildSelectStates
-from app.database.models import User
+from app.database.models import User, get_department_name
 from app.repositories.shift_repo import ShiftRepository
 from app.repositories.department_repo import DepartmentRepository
 from app.repositories.answer_repo import AnswerRepository
@@ -56,10 +56,11 @@ async def _beautify_and_preview(
     """
     data = await state.get_data()
     department_id = data["department_id"]
+    department_name = data.get("department_name") or "Департамент не указан"
 
     processing_msg = await message.answer("✨ Оформляю контекст с помощью ИИ...")
     try:
-        beautified = await get_llm().beautify_shift_context(raw_context)
+        beautified = await get_llm().beautify_shift_context(raw_context, department_name)
     except Exception as e:
         logger.error(f"LLM beautify error: {e}", exc_info=True)
         await processing_msg.delete()
@@ -177,15 +178,20 @@ async def open_department(
     shift = await shift_repo.get_by_id(department.shift_id)
     shift_name = shift.name if shift else f"Смена {department.shift_id}"
 
-    # Сохраняем выбранный департамент и его смену в FSM
-    await state.update_data(department_id=department_id, shift_id=department.shift_id)
-
     # Контекст ОБЩИЙ по департаменту: если у текущего аккаунта своей строки/
     # контекста нет, берём любой непустой контекст, заполненный другим
     # аккаунтом (напр. админом).
     shared_context = (teacher_dep.shift_context or "") if teacher_dep else ""
     if not shared_context:
         shared_context = await dep_repo.get_any_context(department_id)
+
+    # Сохраняем выбранный департамент, смену, название и текущий контекст в FSM.
+    await state.update_data(
+        department_id=department_id,
+        shift_id=department.shift_id,
+        department_name=get_department_name(department.department_number),
+        current_context=shared_context,
+    )
 
     if shared_context:
         # Если контекст уже заполнен, не заставляем педагога каждый раз
@@ -220,8 +226,12 @@ async def use_existing_context(
     ShiftSelectStates.confirm_context, F.data == "teacher:context:change"
 )
 async def change_context(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    current = (data.get("current_context") or "").strip()
+    current_block = f"\n\n<b>Текущий контекст:</b>\n<i>{current}</i>\n" if current else ""
     await callback.message.edit_text(
-        "✏️ <b>Введите новый контекст:</b>\n\n"
+        "✏️ <b>Введите новый контекст:</b>"
+        f"{current_block}\n\n"
         "Расскажите о сюжете, чем занимались дети, ключевые события.\n"
         "Можно написать текстом или отправить голосовое сообщение."
     )
@@ -302,7 +312,7 @@ async def regenerate_beautified_context(
         await callback.answer("🔄 Переформулирую...")
         await callback.message.edit_text("✨ Переформулирую контекст с помощью ИИ...")
         try:
-            beautified = await get_llm().beautify_shift_context(raw)
+            beautified = await get_llm().beautify_shift_context(raw, data.get("department_name"))
         except Exception as e:
             logger.error(f"LLM regenerate error: {e}", exc_info=True)
             await callback.message.answer(
@@ -637,10 +647,39 @@ async def edit_context_from_list(
         await callback.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
         return
 
+    dep_repo = DepartmentRepository(session)
+    teacher_dep = await dep_repo.get_teacher_department(user.id, department_id)
+    current_context = (teacher_dep.shift_context if teacher_dep else "") or ""
+    if not current_context:
+        current_context = await dep_repo.get_any_context(department_id)
+    await state.update_data(current_context=current_context)
+    current_block = (
+        f"\n\n<b>Текущий контекст:</b>\n<i>{current_context}</i>\n"
+        if current_context else ""
+    )
+
     await callback.message.edit_text(
-        "✏️ <b>Введите новый контекст смены:</b>\n\n"
+        "✏️ <b>Введите новый контекст смены:</b>"
+        f"{current_block}\n\n"
         "Расскажите о сюжете, чем занимались дети, ключевые события.\n"
         "Можно написать текстом или отправить голосовое сообщение."
     )
     await state.set_state(ShiftSelectStates.entering_context)
     await callback.answer()
+
+
+@router.callback_query(F.data == "teacher:context:delete")
+async def delete_context(
+    callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
+) -> None:
+    """Полностью удаляет общий контекст текущего департамента."""
+    data = await state.get_data()
+    department_id = data.get("department_id")
+    if not department_id:
+        await callback.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
+        return
+    dep_repo = DepartmentRepository(session)
+    await dep_repo.clear_context(department_id)
+    await state.update_data(current_context="", pending_context="", raw_context="")
+    await callback.answer("✅ Контекст удалён")
+    await _show_children(callback, user, session, state, department_id)

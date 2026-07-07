@@ -63,6 +63,12 @@ def context_exists_keyboard() -> InlineKeyboardMarkup:
                     callback_data="teacher:context:change",
                 ),
             ],
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить контекст смены",
+                    callback_data="teacher:context:delete",
+                ),
+            ],
         ]
     )
 

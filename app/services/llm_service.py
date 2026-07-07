@@ -82,6 +82,8 @@ SYSTEM_PROMPT_BEAUTIFY_CONTEXT = """
 чем занимались дети, сюжет, ключевые события. Текст может быть сырым, с оговорками,
 разговорным, местами сбивчивым.
 
+НАЗВАНИЕ ДЕПАРТАМЕНТА: {department_name}
+
 Твоя задача — превратить его в красивый, связный и вдохновляющий контекст смены,
 опираясь на общий мир лагеря (ниже). Это описание затем используется как фон для
 педагогических отчётов на детей.
@@ -242,13 +244,18 @@ class LLMService:
         return text.strip()
 
 
-    async def beautify_shift_context(self, raw_context: str) -> str:
+    async def beautify_shift_context(
+        self,
+        raw_context: str,
+        department_name: str | None = None,
+    ) -> str:
         """
         Превращает сырой (надиктованный) контекст смены в красивый связный текст,
         опираясь на общий мир лагеря «Летово Игра» / «Корпорация Летово».
         """
         system_prompt = SYSTEM_PROMPT_BEAUTIFY_CONTEXT.format(
             camp_context=CAMP_CONTEXT.strip(),
+            department_name=department_name or "Департамент не указан",
         )
         model = model_settings.get_model("context")
         logger.info(f"Beautifying shift context: {len(raw_context)} chars in (model={model})")

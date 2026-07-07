@@ -89,6 +89,12 @@ def children_keyboard(
                 callback_data="teacher:context:edit",
             )
         )
+        builder.row(
+            InlineKeyboardButton(
+                text="🗑 Удалить контекст смены",
+                callback_data="teacher:context:delete",
+            )
+        )
 
     # Кнопка возврата к выбору департамента — только если департаментов больше
     # одного (иначе возвращаться некуда, и кнопка бы зависала).
