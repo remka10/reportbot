@@ -50,8 +50,14 @@ def children_keyboard(
     for student in page_students:
         answered = progress_map.get(student.id, 0)
         if student.id in finalized_ids:
+            # Отчёт финализирован. Показываем «готово», но если при этом были
+            # заполнены НЕ все вопросы — предупреждаем счётчиком «(готово, N/13)»,
+            # чтобы педагог видел, что отчёт сохранён на неполной анкете.
             icon = "✅"
-            counter = "готово"
+            if answered < total_questions:
+                counter = f"готово ⚠️ {answered}/{total_questions}"
+            else:
+                counter = "готово"
         elif answered > 0:
             icon = "⏳"
             counter = f"{answered}/{total_questions}"
@@ -63,6 +69,7 @@ def children_keyboard(
             text=f"{icon} {student.full_name} ({counter})",
             callback_data=f"teacher:child:{student.id}",
         )
+
     builder.adjust(1)
 
     # Строка постраничной навигации (только если страниц больше одной).
@@ -248,10 +255,17 @@ def finalized_report_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="🤖 Редактировать с помощью ИИ",
+                    callback_data="report:ai_edit",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="🔄 Сгенерировать заново",
                     callback_data="teacher:generate",
                 ),
             ],
+
             [
                 InlineKeyboardButton(
                     text="👦 К списку детей",

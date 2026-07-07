@@ -322,8 +322,46 @@ async def cb_request_revision(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.message.answer(text)
 
 
+@router.callback_query(F.data == "report:ai_edit")
+async def cb_ai_edit_report(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Редактирование отчёта с помощью ИИ, в т.ч. финализированного.
+
+    Загружает актуальный отчёт в FSM и переводит педагога в обычный флоу
+    ИИ-правки (тот же, что и «✏️ Исправить текст» после генерации).
+    """
+    data = await state.get_data()
+    report_id = data.get("report_id")
+    student_id = data.get("student_id")
+    shift_id = data.get("shift_id")
+
+    report_repo = ReportRepository(session)
+    report = await report_repo.get_by_id(report_id) if report_id else None
+    if report is None and student_id and shift_id:
+        report = await report_repo.get_by_student(user.id, student_id, shift_id)
+    if report is None or not (report.generated_text or "").strip():
+        await cb.answer("⚠️ Отчёт не найден", show_alert=True)
+        return
+
+    await state.update_data(report_id=report.id, current_report_text=report.generated_text)
+    await state.set_state(GenerationStates.waiting_revision)
+    await cb.answer()
+
+    parts = _split_text(report.generated_text)
+    await cb.message.answer("📄 <b>Текущий полный текст отчёта:</b>")
+    for part in parts:
+        await cb.message.answer(part)
+    await cb.message.answer(
+        "✏️ <b>Напишите что нужно исправить</b>\n\n"
+        "Например: «Сделай тон более тёплым» или «Добавь про командную работу»\n\n"
+        "Можно написать текстом или отправить <b>голосовое сообщение</b> 🎤"
+    )
+
+
 @router.callback_query(F.data == "report:manual_edit")
 async def cb_manual_edit_report(
+
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
     """Ручное редактирование полного текста отчёта, включая финализированный."""
