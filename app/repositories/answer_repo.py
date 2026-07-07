@@ -2,8 +2,10 @@
 import logging
 from typing import Sequence
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.models import Answer, Question
+
 
 logger = logging.getLogger(__name__)
 
@@ -20,17 +22,11 @@ class AnswerRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def upsert(
-        self,
-        teacher_id: int,
-        student_id: int,
-        question_id: int,
-        answer_text: str,
-        raw_audio_transcription: str | None = None,
-    ) -> Answer:
-        from datetime import datetime, timezone
-        # Ищем ЛЮБОЙ существующий ответ на этот вопрос по ребёнку (любого педагога),
-        # чтобы не плодить дубли и чтобы правка была видна всем.
+    async def _find_existing(
+        self, student_id: int, question_id: int
+    ) -> Answer | None:
+        # ЛЮБОЙ существующий ответ на этот вопрос по ребёнку (любого педагога) —
+        # самый свежий, чтобы не плодить дубли и чтобы правка была видна всем.
         result = await self.session.execute(
             select(Answer)
             .where(
@@ -40,26 +36,92 @@ class AnswerRepository:
             .order_by(Answer.id.desc())
             .limit(1)
         )
-        existing = result.scalars().first()
-        if existing:
-            existing.answer_text = answer_text
-            existing.teacher_id = teacher_id  # кто последним заполнил
-            existing.updated_at = datetime.now(timezone.utc)
-            if raw_audio_transcription:
-                existing.raw_audio_transcription = raw_audio_transcription
-            await self.session.flush()
-            return existing
-        else:
-            answer = Answer(
-                teacher_id=teacher_id,
-                student_id=student_id,
-                question_id=question_id,
-                answer_text=answer_text,
-                raw_audio_transcription=raw_audio_transcription,
+        return result.scalars().first()
+
+    async def upsert(
+        self,
+        teacher_id: int,
+        student_id: int,
+        question_id: int,
+        answer_text: str,
+        raw_audio_transcription: str | None = None,
+    ) -> Answer:
+        """Идемпотентно сохраняет ответ.
+
+        Устойчив к гонке: текстовый ответ (сессия хендлера) и фоновая расшифровка
+        голоса (своя сессия) могут прийти на один и тот же вопрос почти
+        одновременно — оба находят «пусто» и пытаются INSERT, что раньше падало с
+        UniqueViolationError по uq_answer(teacher_id, student_id, question_id).
+        Здесь вставка обёрнута в SAVEPOINT: при конфликте откатываемся к нему
+        (не рушим внешнюю транзакцию) и обновляем уже существующую строку.
+        """
+        existing = await self._find_existing(student_id, question_id)
+        if existing is not None:
+            return await self._apply_update(
+                existing, teacher_id, student_id, question_id,
+                answer_text, raw_audio_transcription,
             )
-            self.session.add(answer)
-            await self.session.flush()
+
+        answer = Answer(
+            teacher_id=teacher_id,
+            student_id=student_id,
+            question_id=question_id,
+            answer_text=answer_text,
+            raw_audio_transcription=raw_audio_transcription,
+        )
+        self.session.add(answer)
+        try:
+            async with self.session.begin_nested():
+                await self.session.flush()
             return answer
+        except IntegrityError:
+            # Параллельная вставка успела раньше — SAVEPOINT откатан, внешняя
+            # транзакция цела. Убираем «повисший» объект и обновляем существующий.
+            self.session.expunge(answer)
+            existing = await self._find_existing(student_id, question_id)
+            if existing is None:
+                raise
+            return await self._apply_update(
+                existing, teacher_id, student_id, question_id,
+                answer_text, raw_audio_transcription,
+            )
+
+    async def _apply_update(
+        self,
+        row: Answer,
+        teacher_id: int,
+        student_id: int,
+        question_id: int,
+        answer_text: str,
+        raw_audio_transcription: str | None,
+    ) -> Answer:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+
+        # Пробуем обновить всё, включая автора (кто последним заполнил).
+        try:
+            async with self.session.begin_nested():
+                row.answer_text = answer_text
+                row.teacher_id = teacher_id
+                row.updated_at = now
+                if raw_audio_transcription:
+                    row.raw_audio_transcription = raw_audio_transcription
+                await self.session.flush()
+            return row
+        except IntegrityError:
+            # Смена автора столкнулась с историческим дублем строки
+            # (teacher_id, student_id, question_id). SAVEPOINT откатан, объект
+            # мог протухнуть — перечитываем и обновляем БЕЗ смены teacher_id.
+            fresh = await self._find_existing(student_id, question_id)
+            if fresh is None:
+                raise
+            fresh.answer_text = answer_text
+            fresh.updated_at = now
+            if raw_audio_transcription:
+                fresh.raw_audio_transcription = raw_audio_transcription
+            await self.session.flush()
+            return fresh
+
 
     async def get_by_teacher_student_question(
         self, teacher_id: int, student_id: int, question_id: int
