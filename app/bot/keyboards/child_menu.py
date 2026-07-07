@@ -265,6 +265,12 @@ def finalized_report_keyboard() -> InlineKeyboardMarkup:
                     callback_data="teacher:generate",
                 ),
             ],
+            [
+                InlineKeyboardButton(
+                    text="📝 Вернуться к заполнению анкеты",
+                    callback_data="report:reopen",
+                ),
+            ],
 
             [
                 InlineKeyboardButton(

@@ -81,6 +81,18 @@ class ReportRepository:
         logger.info(f"Finalized report id={report_id}")
         return True
 
+    async def unfinalize(self, report_id: int) -> bool:
+        """Снимает статус финализации, чтобы вернуться к дозаполнению анкеты."""
+        report = await self.session.get(Report, report_id)
+        if report is None:
+            return False
+        report.is_finalized = False
+        report.finalized_at = None
+        await self.session.flush()
+        logger.info(f"Unfinalized report id={report_id}")
+        return True
+
+
     async def add_revision_message(
         self, report_id: int, role: DialogRole, content: str
     ) -> RevisionHistory:

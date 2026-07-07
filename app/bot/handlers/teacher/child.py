@@ -56,9 +56,39 @@ async def cb_child_selected(
     await _go_to_question(cb.message, state, user, session, question_num=1, edit=True)
 
 
+@router.callback_query(F.data == "report:reopen")
+async def cb_reopen_report(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Снимает финализацию отчёта и открывает анкету для дозаполнения вопросов.
+
+    Нужно, когда отчёт уже финализирован, но педагогу надо вернуться и
+    заполнить/поправить ответы на вопросы. Сам текст отчёта сохраняется —
+    его можно перегенерировать позже.
+    """
+    data = await state.get_data()
+    report_id = data.get("report_id")
+    student_id = data.get("student_id")
+    shift_id = data.get("shift_id")
+
+    report_repo = ReportRepository(session)
+    report = await report_repo.get_by_id(report_id) if report_id else None
+    if report is None and student_id and shift_id:
+        report = await report_repo.get_by_student(user.id, student_id, shift_id)
+    if report is None:
+        await cb.answer("⚠️ Отчёт не найден", show_alert=True)
+        return
+
+    await report_repo.unfinalize(report.id)
+    await state.update_data(report_id=report.id)
+    await cb.answer("Отчёт открыт для дозаполнения")
+    await _go_to_question(cb.message, state, user, session, question_num=1, edit=True)
+
+
 # ---------------------------------------------------------------------------
 # Навигация по вопросам (← / →)
 # ---------------------------------------------------------------------------
+
 
 @router.callback_query(QuestionStates.answering, F.data.startswith("q:prev:"))
 async def cb_prev_question(
