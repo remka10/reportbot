@@ -9,6 +9,8 @@ from app.bot.keyboards.shift_menu import (
     departments_keyboard,
     context_exists_keyboard,
     context_preview_keyboard,
+    edit_context_keyboard,
+    confirm_delete_context_keyboard,
 )
 from app.bot.keyboards.child_menu import children_keyboard
 from app.bot.states.teacher_states import ShiftSelectStates, ChildSelectStates
@@ -664,7 +666,8 @@ async def edit_context_from_list(
         "✏️ <b>Введите новый контекст смены:</b>"
         f"{current_block}\n\n"
         "Расскажите о сюжете, чем занимались дети, ключевые события.\n"
-        "Можно написать текстом или отправить голосовое сообщение."
+        "Можно написать текстом или отправить голосовое сообщение.",
+        reply_markup=edit_context_keyboard(has_context=bool(current_context)),
     )
     await state.set_state(ShiftSelectStates.entering_context)
     await callback.answer()
@@ -674,7 +677,28 @@ async def edit_context_from_list(
 async def delete_context(
     callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
 ) -> None:
-    """Полностью удаляет общий контекст текущего департамента."""
+    """Спрашивает подтверждение перед удалением контекста департамента."""
+    data = await state.get_data()
+    department_id = data.get("department_id")
+    if not department_id:
+        await callback.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
+        return
+    current = (data.get("current_context") or "").strip()
+    current_block = f"\n\n<i>{current}</i>" if current else ""
+    await callback.message.edit_text(
+        "🗑 <b>Удалить контекст смены?</b>"
+        f"{current_block}\n\n"
+        "Это действие нельзя отменить — контекст будет удалён для всего департамента.",
+        reply_markup=confirm_delete_context_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "teacher:context:delete:confirm")
+async def delete_context_confirm(
+    callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
+) -> None:
+    """Полностью удаляет общий контекст текущего департамента после подтверждения."""
     data = await state.get_data()
     department_id = data.get("department_id")
     if not department_id:
@@ -683,5 +707,7 @@ async def delete_context(
     dep_repo = DepartmentRepository(session)
     await dep_repo.clear_context(department_id)
     await state.update_data(current_context="", pending_context="", raw_context="")
-    await callback.answer("✅ Контекст удалён")
+    await callback.answer("🗑 Контекст удалён")
     await _show_children(callback, user, session, state, department_id)
+
+

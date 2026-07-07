@@ -82,17 +82,13 @@ def children_keyboard(
         builder.row(*nav_row)
 
     # Отдельная кнопка изменения контекста смены (по требованию — отдельно).
+    # Удаление контекста вынесено ВНУТРЬ экрана изменения контекста (с
+    # подтверждением), поэтому отдельной кнопки удаления здесь больше нет.
     if show_context_button:
         builder.row(
             InlineKeyboardButton(
                 text="✏️ Изменить контекст смены",
                 callback_data="teacher:context:edit",
-            )
-        )
-        builder.row(
-            InlineKeyboardButton(
-                text="🗑 Удалить контекст смены",
-                callback_data="teacher:context:delete",
             )
         )
 

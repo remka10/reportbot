@@ -74,6 +74,53 @@ def context_exists_keyboard() -> InlineKeyboardMarkup:
 
 
 
+def edit_context_keyboard(has_context: bool = True) -> InlineKeyboardMarkup:
+    """Клавиатура экрана изменения контекста смены.
+
+    Кнопка удаления контекста живёт ИМЕННО здесь (внутри «Изменить контекст»),
+    а не в списке детей. Показываем её только если контекст вообще есть.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    if has_context:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить контекст смены",
+                    callback_data="teacher:context:delete",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="← Назад к списку детей",
+                callback_data="teacher:child_list",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def confirm_delete_context_keyboard() -> InlineKeyboardMarkup:
+    """Подтверждение удаления контекста смены."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Да, удалить",
+                    callback_data="teacher:context:delete:confirm",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="↩️ Отмена",
+                    callback_data="teacher:child_list",
+                ),
+            ],
+        ]
+    )
+
+
 def context_preview_keyboard() -> InlineKeyboardMarkup:
     """
     Кнопки после того как ИИ оформил надиктованный контекст смены.
