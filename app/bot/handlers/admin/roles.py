@@ -122,7 +122,8 @@ async def cb_add_user_start(cb: CallbackQuery, state: FSMContext) -> None:
         "Отправьте одно из следующего:\n"
         "• Числовой <b>Telegram ID</b> — подойдёт <u>любой</u> ID, даже если "
         "пользователь ещё ни разу не писал боту (узнать ID можно через @userinfobot)\n"
-        "• Ник в формате <b>@username</b>\n"
+        "• Ник в формате <b>@username</b>, если пользователь уже писал боту\n"
+        "• Попросите пользователя написать боту <b>/start</b>, затем добавьте по @username\n"
         "• Нажмите кнопку <b>«👤 Выбрать пользователя»</b> ниже — откроется список "
         "контактов Telegram, выберите нужного человека.",
     )
@@ -326,13 +327,13 @@ async def cb_add_user_skip(cb: CallbackQuery, state: FSMContext, user: User) -> 
 
 
 # ---------------------------------------------------------------------------
-# Список педагогов
+# Списки пользователей
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "admin:users:list")
 async def cb_users_list(cb: CallbackQuery, session: AsyncSession) -> None:
     repo = UserRepository(session)
-    teachers = await repo.get_by_role(UserRole.teacher)
+    teachers = await repo.get_teachers_sorted()
     if not teachers:
         await cb.message.edit_text(
             "Педагоги не найдены.",
@@ -340,9 +341,29 @@ async def cb_users_list(cb: CallbackQuery, session: AsyncSession) -> None:
         )
         return
     lines = [f"👨‍🏫 <b>Педагоги ({len(teachers)}):</b>"]
-    for t in teachers:
+    for t, dep_label in teachers:
         status = "✅" if t.is_active else "🚫"
-        lines.append(f"{status} {user_stats_label(t)}")
+        lines.append(f"{status} {dep_label} — {user_stats_label(t)}")
+    await cb.message.edit_text(
+        "\n".join(lines),
+        reply_markup=back_keyboard("admin:users"),
+    )
+
+
+@router.callback_query(F.data == "admin:users:admins")
+async def cb_admins_list(cb: CallbackQuery, session: AsyncSession) -> None:
+    repo = UserRepository(session)
+    admins = await repo.get_by_role(UserRole.admin)
+    if not admins:
+        await cb.message.edit_text(
+            "Админы не найдены.",
+            reply_markup=back_keyboard("admin:users"),
+        )
+        return
+    lines = [f"👑 <b>Админы ({len(admins)}):</b>"]
+    for admin in admins:
+        status = "✅" if admin.is_active else "🚫"
+        lines.append(f"{status} {user_stats_label(admin)}")
     await cb.message.edit_text(
         "\n".join(lines),
         reply_markup=back_keyboard("admin:users"),
@@ -416,7 +437,7 @@ async def change_role_confirm(
 
 
 # ---------------------------------------------------------------------------
-# Деактивировать пользователя
+# Удалить пользователя
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "admin:users:deactivate")
@@ -426,11 +447,11 @@ async def cb_deactivate_start(
     repo = UserRepository(session)
     users = [u for u in await repo.get_all_active() if u.id != user.id]
     if not users:
-        await cb.message.edit_text("Нет пользователей для деактивации.", reply_markup=back_keyboard("admin:users"))
+        await cb.message.edit_text("Нет пользователей для удаления.", reply_markup=back_keyboard("admin:users"))
         return
     await state.set_state(DeactivateUserStates.waiting_user_select)
     await cb.message.edit_text(
-        "Выберите пользователя для деактивации:",
+        "Выберите пользователя для полного удаления из БД:",
         reply_markup=users_list_keyboard(users),
     )
 
@@ -448,8 +469,9 @@ async def deactivate_user_selected(
     await state.update_data(target_user_id=target_id)
     await state.set_state(DeactivateUserStates.confirm)
     await cb.message.edit_text(
-        f"Деактивировать <b>{user_greeting_name(target)}</b> "
-        f"(<code>@{target.id}</code>)? Пользователь потеряет доступ к боту.",
+        f"Удалить <b>{user_greeting_name(target)}</b> "
+        f"(<code>@{target.id}</code>) полностью из БД?\n\n"
+        "Будут удалены его привязки, ответы и отчёты.",
         reply_markup=confirm_keyboard(yes_data="admin:users:deactivate:confirm"),
     )
 

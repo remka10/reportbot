@@ -126,11 +126,11 @@ class UserService:
     async def deactivate(
         self, actor: User, target_user_id: int
     ) -> ServiceResult:
-        """Деактивировать пользователя."""
+        """Полностью удалить пользователя из БД."""
         if actor.id == target_user_id:
             return ServiceResult(
                 success=False,
-                message="⚠️ Нельзя деактивировать самого себя.",
+                message="⚠️ Нельзя удалить самого себя.",
             )
 
         target = await self.repo.get_by_id(target_user_id)
@@ -139,9 +139,9 @@ class UserService:
                 success=False,
                 message="⚠️ Пользователь не найден.",
             )
-        await self.repo.set_active(target_user_id, False)
+        await self.repo.delete_user(target_user_id)
         return ServiceResult(
             success=True,
-            message="✅ Пользователь деактивирован.",
+            message="✅ Пользователь полностью удалён из БД.",
         )
 

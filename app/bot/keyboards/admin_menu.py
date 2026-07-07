@@ -73,12 +73,13 @@ def users_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="➕ Добавить пользователя", callback_data="admin:users:add")],
 
         [InlineKeyboardButton(text="👁 Список педагогов",             callback_data="admin:users:list")],
+        [InlineKeyboardButton(text="👑 Список админов",              callback_data="admin:users:admins")],
     ]
     if is_admin:
         rows.append(
             [InlineKeyboardButton(text="🔄 Изменить роль", callback_data="admin:users:change_role")]
         )
-    rows.append([InlineKeyboardButton(text="🚫 Деактивировать", callback_data="admin:users:deactivate")])
+    rows.append([InlineKeyboardButton(text="Удалить пользователя", callback_data="admin:users:deactivate")])
     rows.append([InlineKeyboardButton(text="← Назад",           callback_data="admin:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
