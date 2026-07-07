@@ -495,9 +495,9 @@ async def _build_children_view(
 ):
     """Готовит данные для списка детей департамента.
 
-    Возвращает (students, progress_map, finalized_ids, total, multiple_departments),
-    где multiple_departments — True, если у пользователя больше одного
-    доступного департамента (нужно для кнопки «Назад к департаментам»).
+    Возвращает (students, progress_map, finalized_ids, total, back_departments_cb),
+    где back_departments_cb — callback кнопки «Назад к департаментам» или None,
+    если возвращаться некуда (единственный департамент у педагога).
     """
     student_repo = StudentRepository(session)
     answer_repo = AnswerRepository(session)
@@ -508,13 +508,22 @@ async def _build_children_view(
     shift_id = department.shift_id if department else None
     students = list(await student_repo.get_by_department(department_id))
 
-    # Сколько всего департаментов доступно пользователю — определяет, нужна ли
-    # кнопка возврата к списку департаментов (при единственном возвращаться некуда).
-    all_departments = list(await dep_repo.get_for_teacher(user.id))
-    multiple_departments = len(all_departments) > 1
+    # Определяем, куда ведёт кнопка «Назад к департаментам».
+    # Если пользователь в админском флоу заполнения (в FSM есть fill_shift_id) —
+    # возвращаем к полному списку департаментов смены (fill:departments), так как
+    # teacher:shifts у админа показывает только привязанные департаменты.
+    data = await state.get_data()
+    fill_shift_id = data.get("fill_shift_id")
+    if fill_shift_id:
+        back_departments_cb = "fill:departments"
+    else:
+        # Педагог: кнопка нужна только если департаментов больше одного.
+        all_departments = list(await dep_repo.get_for_teacher(user.id))
+        back_departments_cb = "teacher:shifts" if len(all_departments) > 1 else None
 
     if not students:
-        return None, None, None, None, multiple_departments
+        return None, None, None, None, back_departments_cb
+
 
     student_ids = [s.id for s in students]
     progress_map = await answer_repo.get_progress_map(user.id, student_ids)
@@ -525,10 +534,10 @@ async def _build_children_view(
     await state.update_data(
         department_id=department_id,
         shift_id=shift_id,
-        multiple_departments=multiple_departments,
+        back_departments_cb=back_departments_cb,
     )
     await state.set_state(ChildSelectStates.choosing_child)
-    return students, progress_map, finalized_ids, len(students), multiple_departments
+    return students, progress_map, finalized_ids, len(students), back_departments_cb
 
 
 async def _show_children(
@@ -539,7 +548,7 @@ async def _show_children(
     department_id: int,
     page: int = 0,
 ) -> None:
-    students, progress_map, finalized_ids, total, multiple_departments = (
+    students, progress_map, finalized_ids, total, back_departments_cb = (
         await _build_children_view(user, session, state, department_id)
     )
     if students is None:
@@ -556,7 +565,8 @@ async def _show_children(
 
         reply_markup=children_keyboard(
             students, progress_map, finalized_ids, page=page,
-            show_back_to_departments=multiple_departments,
+            show_back_to_departments=bool(back_departments_cb),
+            back_to_departments_cb=back_departments_cb or "teacher:shifts",
         ),
     )
 
@@ -569,7 +579,7 @@ async def _show_children_message(
     department_id: int,
     page: int = 0,
 ) -> None:
-    students, progress_map, finalized_ids, total, multiple_departments = (
+    students, progress_map, finalized_ids, total, back_departments_cb = (
         await _build_children_view(user, session, state, department_id)
     )
     if students is None:
@@ -588,9 +598,11 @@ async def _show_children_message(
 
         reply_markup=children_keyboard(
             students, progress_map, finalized_ids, page=page,
-            show_back_to_departments=multiple_departments,
+            show_back_to_departments=bool(back_departments_cb),
+            back_to_departments_cb=back_departments_cb or "teacher:shifts",
         ),
     )
+
 
 
 @router.callback_query(F.data == "teacher:child_list")

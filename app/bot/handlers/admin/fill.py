@@ -67,18 +67,14 @@ async def cb_fill_start(
     await cb.answer()
 
 
-@router.callback_query(
-    AdminFillStates.waiting_shift_select, F.data.startswith("fill_shift:")
-)
-async def cb_fill_shift_selected(
-    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+async def _render_fill_departments(
+    cb: CallbackQuery, state: FSMContext, session: AsyncSession, shift_id: int
 ) -> None:
-    """Выбрана смена — показываем её департаменты."""
-    if not _is_admin_or_mod(user):
-        await cb.answer("Нет доступа", show_alert=True)
-        return
+    """Показывает ВСЕ департаменты выбранной смены (список для заполнения).
 
-    shift_id = int(cb.data.split(":")[1])
+    Вынесено в отдельный хелпер, чтобы к этому экрану можно было вернуться
+    кнопкой «Назад» из списка детей (см. хендлер fill:departments).
+    """
     dep_repo = DepartmentRepository(session)
     departments = list(await dep_repo.get_by_shift(shift_id))
     if not departments:
@@ -94,13 +90,50 @@ async def cb_fill_shift_selected(
     builder = InlineKeyboardBuilder()
     for d in departments:
         builder.button(text=f"{d.emoji} {d.name}", callback_data=f"fill_department:{d.id}")
-    builder.button(text="← Назад", callback_data="admin:fill")
+    builder.button(text="← Назад к сменам", callback_data="admin:fill")
     builder.adjust(1)
     await cb.message.edit_text(
         "🏢 Выберите департамент для заполнения отчётов:",
         reply_markup=builder.as_markup(),
     )
     await cb.answer()
+
+
+@router.callback_query(
+    AdminFillStates.waiting_shift_select, F.data.startswith("fill_shift:")
+)
+async def cb_fill_shift_selected(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Выбрана смена — показываем её департаменты."""
+    if not _is_admin_or_mod(user):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    shift_id = int(cb.data.split(":")[1])
+    await _render_fill_departments(cb, state, session, shift_id)
+
+
+@router.callback_query(F.data == "fill:departments")
+async def cb_fill_back_to_departments(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Возврат к списку департаментов смены (из списка детей).
+
+    State-agnostic: работает даже когда админ уже был в списке детей
+    (ChildSelectStates), поэтому берём shift_id из FSM (fill_shift_id).
+    """
+    if not _is_admin_or_mod(user):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    data = await state.get_data()
+    shift_id = data.get("fill_shift_id")
+    if not shift_id:
+        await cb.answer("❌ Сессия истекла. Начните заново.", show_alert=True)
+        return
+    await _render_fill_departments(cb, state, session, shift_id)
+
 
 
 @router.callback_query(

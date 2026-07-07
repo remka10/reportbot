@@ -24,7 +24,9 @@ def children_keyboard(
     page_size: int = CHILDREN_PAGE_SIZE,
     show_context_button: bool = True,
     show_back_to_departments: bool = False,
+    back_to_departments_cb: str = "teacher:shifts",
 ) -> InlineKeyboardMarkup:
+
     """
     Список детей с прогресс-индикатором и ПОСТРАНИЧНОЙ навигацией.
     ✅ = отчёт финализирован
@@ -111,9 +113,10 @@ def children_keyboard(
         builder.row(
             InlineKeyboardButton(
                 text="← Назад к департаментам",
-                callback_data="teacher:shifts",
+                callback_data=back_to_departments_cb,
             )
         )
+
 
     return builder.as_markup()
 
