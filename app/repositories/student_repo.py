@@ -33,6 +33,22 @@ class StudentRepository:
         )
         return result.scalars().all()
 
+    async def normalize_positions(
+        self,
+        shift_id: int,
+        department_id: int | None = None,
+    ) -> None:
+        """Перенумеровать учащихся подряд в рамках департамента или смены."""
+        if department_id is not None:
+            students = list(await self.get_by_department(department_id))
+        else:
+            students = list(await self.get_by_shift(shift_id))
+
+        for index, student in enumerate(students, start=1):
+            if student.position != index:
+                student.position = index
+        await self.session.flush()
+
     async def create(
         self,
         full_name: str,
@@ -60,11 +76,29 @@ class StudentRepository:
         )
         self.session.add(student)
         await self.session.flush()
+        await self.normalize_positions(shift_id=shift_id, department_id=department_id)
         logger.info(
             f"Created student id={student.id} name={full_name!r} "
             f"shift={shift_id} dep={department_id}"
         )
         return student
+
+    async def create_many(
+        self,
+        full_names: Sequence[str],
+        shift_id: int,
+        department_id: int | None = None,
+    ) -> list[Student]:
+        """Создать нескольких учащихся и вернуть созданные записи."""
+        created: list[Student] = []
+        for full_name in full_names:
+            student = await self.create(
+                full_name=full_name,
+                shift_id=shift_id,
+                department_id=department_id,
+            )
+            created.append(student)
+        return created
 
     async def update_name(self, student_id: int, new_name: str) -> bool:
         student = await self.session.get(Student, student_id)
@@ -78,8 +112,11 @@ class StudentRepository:
         student = await self.session.get(Student, student_id)
         if student is None:
             return False
+        shift_id = student.shift_id
+        department_id = student.department_id
         await self.session.delete(student)
         await self.session.flush()
+        await self.normalize_positions(shift_id=shift_id, department_id=department_id)
         logger.info(f"Deleted student id={student_id}")
         return True
 

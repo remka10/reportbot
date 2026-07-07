@@ -83,8 +83,10 @@ async def add_student_department_selected(cb: CallbackQuery, state: FSMContext, 
     await state.set_state(AddStudentStates.waiting_full_name)
     await cb.message.edit_text(
         f"Департамент: <b>{dep.name if dep else department_id}</b>\n\n"
-        "Введите <b>полное имя</b> учащегося (Фамилия Имя):\n"
-        "<i>Чтобы добавить нескольких — отправляйте по одному сообщению.</i>\n"
+        "Введите <b>полное имя</b> учащегося (Фамилия Имя) или список ФИО — каждое с новой строки:\n"
+        "<i>Например:</i>\n"
+        "Иванов Иван\n"
+        "Петрова Анна\n\n"
         "Когда закончите — нажмите /done",
         reply_markup=back_keyboard("admin:students"),
     )
@@ -99,26 +101,40 @@ async def add_student_done(message: Message, state: FSMContext) -> None:
 
 @router.message(AddStudentStates.waiting_full_name, F.text)
 async def add_student_name(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    full_name = (message.text or "").strip()
-    if full_name.startswith("/"):
-        await message.answer("⚠️ Неизвестная команда. Введите имя или нажмите /done для завершения.")
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        await message.answer("⚠️ Неизвестная команда. Введите имя/список имён или нажмите /done для завершения.")
         return
-    if len(full_name) < 2:
-        await message.answer("⚠️ Имя слишком короткое. Введите ещё раз:")
+
+    full_names = [line.strip() for line in text.splitlines() if line.strip()]
+    invalid_names = [name for name in full_names if len(name) < 2]
+    if not full_names or invalid_names:
+        await message.answer(
+            "⚠️ В списке есть слишком короткое имя. "
+            "Введите ФИО заново: по одному или несколькими строками."
+        )
         return
+
     data = await state.get_data()
     department_id = data.get("department_id")
     repo = StudentRepository(session)
-    student = await repo.create(
-        full_name=full_name,
+    students = await repo.create_many(
+        full_names=full_names,
         shift_id=data["shift_id"],
         department_id=department_id,
     )
     count = await repo.count_by_department(department_id) if department_id else await repo.count_by_shift(data["shift_id"])
+    if len(students) == 1:
+        result_text = f"✅ <b>{students[0].full_name}</b> добавлен (#{students[0].position})."
+    else:
+        result_lines = [f"✅ Добавлено учащихся: <b>{len(students)}</b>"]
+        result_lines.extend(f"{student.position}. {student.full_name}" for student in students)
+        result_text = "\n".join(result_lines)
+
     await message.answer(
-        f"✅ <b>{student.full_name}</b> добавлен (#{student.position}).\n"
+        f"{result_text}\n"
         f"Всего в департаменте: {count} уч.\n"
-        f"Введите следующее имя или нажмите /done чтобы завершить."
+        f"Введите следующее имя/список или нажмите /done чтобы завершить."
     )
 
 
