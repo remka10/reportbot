@@ -289,24 +289,37 @@ class LLMService:
 
     async def revise_report(
         self,
-        revision_history: list[dict],
+        current_report: str,
         revision_request: str,
     ) -> str:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT_REVISION}]
-        messages.extend(revision_history)
-        messages.append({"role": "user", "content": revision_request})
+        """Правит отчёт по запросу педагога.
+
+        ВАЖНО: в модель передаётся ТОЛЬКО актуальный полный отчёт + новая правка,
+        а НЕ вся накопительная история правок. Раньше слалась вся история (каждый
+        ход — полный отчёт ~2000 токенов), из-за чего вход разрастался в «полотно»,
+        а ответ упирался в лимит max_tokens и обрывался на полуслове.
+        """
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT_REVISION},
+            {"role": "assistant", "content": current_report},
+            {"role": "user", "content": revision_request},
+        ]
         model = model_settings.get_model("generation")
-        logger.info(f"Revising report: history_len={len(revision_history)} (model={model})")
+        logger.info(
+            f"Revising report: current_len={len(current_report)} chars (model={model})"
+        )
         response = await self.client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=0.6,
-
-            max_tokens=2000,
+            # Отчёт (13 ответов + итог) на русском занимает заметно больше 2000
+            # токенов — иначе полный текст не помещается и обрывается.
+            max_tokens=4096,
         )
         text = response.choices[0].message.content or ""
         logger.info(f"Revision done: {len(text)} chars")
         return text.strip()
+
 
     async def clean_stt_transcription(
         self,

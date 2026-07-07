@@ -321,32 +321,25 @@ async def _apply_revision(
     report_repo = ReportRepository(session)
 
     try:
-        # Текущий (актуальный) текст отчёта — из него берём блок ответов 1..13,
-        # чтобы он не потерялся при правке итогового отчёта.
+        # Текущий (актуальный) текст отчёта. В модель отправляем именно его +
+        # новую правку (НЕ всю растущую историю правок — иначе вход разрастается
+        # в «полотно», а ответ упирается в лимит и обрывается на полуслове).
         current_report = await report_repo.get_by_id(report_id)
-        prev_answers, _ = _split_report(
-            current_report.generated_text if current_report else ""
-        )
+        current_text = current_report.generated_text if current_report else ""
+        prev_answers, _ = _split_report(current_text)
 
+        # Историю всё равно ведём для аудита/просмотра, но в LLM её не шлём.
         await report_repo.add_revision_message(
             report_id=report_id,
             role=DialogRole.user,
             content=revision_request,
         )
-        history = list(await report_repo.get_revision_history(report_id))
-        # Преобразуем ORM-историю в сообщения чата (без последнего — это текущий запрос)
-        history_messages = [
-            {
-                "role": h.role.value if hasattr(h.role, "value") else str(h.role),
-                "content": h.content,
-            }
-            for h in history[:-1]
-        ]
         llm = LLMService()
         revised_text = await llm.revise_report(
-            revision_history=history_messages,
+            current_report=current_text,
             revision_request=revision_request,
         )
+
 
         # Гарантия сохранности ответов: если у отчёта был блок ответов 1..13,
         # но модель его не вернула (потеряла/обрезала), пересобираем полный текст
