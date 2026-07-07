@@ -1,6 +1,8 @@
+import asyncio
 import logging
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,8 +55,71 @@ def _split_text(text: str, max_len: int = TG_MAX_TEXT) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Устойчивые обёртки над Telegram-вызовами
+# ---------------------------------------------------------------------------
+# Контекст: сеть до api.telegram.org иногда моргает (TelegramNetworkError).
+# Если UI-вызов (edit_text/answer) падает голым исключением, DbSessionMiddleware
+# откатывает ВСЮ транзакцию хендлера — включая уже выполненные записи в БД
+# (например report_repo.finalize). Эти обёртки делают несколько попыток и НЕ
+# роняют хендлер: при неудаче логируют и возвращают None, чтобы бизнес-логика
+# (commit в middleware) не терялась из-за проблем с доставкой сообщения.
+
+_RETRY_DELAYS = (0.5, 1.0, 2.0)
+
+
+async def safe_edit_text(
+    message: Message,
+    text: str,
+    reply_markup=None,
+    retries: int = 3,
+) -> Message | None:
+    """edit_text с ретраями на сетевые сбои и фолбэком на answer.
+
+    TelegramBadRequest (в т.ч. «message is not modified») не ретраится —
+    это не сетевая проблема, повтор не поможет.
+    """
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return await message.edit_text(text, reply_markup=reply_markup)
+        except TelegramNetworkError as e:
+            last_err = e
+            if attempt < retries - 1:
+                await asyncio.sleep(_RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)])
+        except TelegramBadRequest as e:
+            logger.warning(f"safe_edit_text: BadRequest, пропускаю ретраи: {e}")
+            return None
+    logger.error(f"safe_edit_text: не удалось отредактировать после {retries} попыток: {last_err}")
+    # Фолбэк: пробуем отправить новым сообщением, чтобы пользователь всё же увидел результат.
+    return await safe_answer(message, text, reply_markup=reply_markup)
+
+
+async def safe_answer(
+    message: Message,
+    text: str,
+    reply_markup=None,
+    retries: int = 3,
+) -> Message | None:
+    """answer с ретраями на сетевые сбои. Никогда не роняет хендлер."""
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return await message.answer(text, reply_markup=reply_markup)
+        except TelegramNetworkError as e:
+            last_err = e
+            if attempt < retries - 1:
+                await asyncio.sleep(_RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)])
+        except TelegramBadRequest as e:
+            logger.warning(f"safe_answer: BadRequest, пропускаю ретраи: {e}")
+            return None
+    logger.error(f"safe_answer: не удалось отправить после {retries} попыток: {last_err}")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Проверка перед генерацией: все ли вопросы заполнены
 # ---------------------------------------------------------------------------
+
 
 @router.callback_query(F.data == "teacher:generate_check")
 async def cb_generate_check(
@@ -78,12 +143,14 @@ async def cb_generate_check(
 
     if answered < total:
         await cb.answer()
-        await cb.message.answer(
+        await safe_answer(
+            cb.message,
             f"⚠️ <b>Заполнены не все вопросы: {answered}/{total}.</b>\n\n"
             "Вы уверены, что хотите сгенерировать отчёт сейчас?",
             reply_markup=confirm_generate_keyboard(answered, total),
         )
         return
+
 
     # Все вопросы заполнены — запускаем генерацию сразу.
     await cb_generate_report(cb, state, user, session)
@@ -119,12 +186,14 @@ async def cb_generate_report(
 
         qa_pairs = await answer_repo.get_qa_pairs_for_report(user.id, student_id)
         if not qa_pairs:
-            await status_msg.edit_text(
+            await safe_edit_text(
+                status_msg,
                 "⚠️ Нет ответов на вопросы. Сначала заполните хотя бы несколько ответов.",
                 reply_markup=generate_report_keyboard(),
             )
             await state.set_state(QuestionStates.answering)
             return
+
 
         department_id = data.get("department_id")
         shift_context = ""
@@ -182,9 +251,10 @@ async def cb_generate_report(
         await status_msg.delete()
         for i, part in enumerate(parts):
             if i < len(parts) - 1:
-                await cb.message.answer(part)
+                await safe_answer(cb.message, part)
             else:
-                await cb.message.answer(
+                await safe_answer(
+                    cb.message,
                     part + "\n\n─────────────────\n"
                           "Отчёт готов. Сохранить или исправить?",
                     reply_markup=report_review_keyboard(),
@@ -192,11 +262,13 @@ async def cb_generate_report(
 
     except Exception as e:
         logger.error(f"Report generation error: {e}", exc_info=True)
-        await status_msg.edit_text(
+        await safe_edit_text(
+            status_msg,
             "⚠️ Ошибка при генерации отчёта. Попробуйте ещё раз.",
             reply_markup=generate_report_keyboard(),
         )
         await state.set_state(QuestionStates.answering)
+
 
 
 # ---------------------------------------------------------------------------
@@ -271,30 +343,40 @@ async def cb_finalize_report(
         await cb.answer("Ошибка: отчёт не найден.", show_alert=True)
         return
 
-    department_id = data.get("department_id")
-    report_repo = ReportRepository(session)
-    student_repo = StudentRepository(session)
+    try:
+        department_id = data.get("department_id")
+        report_repo = ReportRepository(session)
+        student_repo = StudentRepository(session)
 
-    await report_repo.finalize(report_id)
+        # Ключевой шаг: фиксация отчёта в БД. Коммит выполнит DbSessionMiddleware
+        # после успешного возврата хендлера. Все последующие Telegram-вызовы идут
+        # через safe_* — сетевой сбой доставки НЕ должен откатывать этот finalize.
+        await report_repo.finalize(report_id)
 
-    finalized_ids = await report_repo.get_finalized_student_ids(user.id, shift_id)
-    if department_id:
-        dep_students = await student_repo.get_by_department(department_id)
-        dep_ids = {s.id for s in dep_students}
-        done = len({sid for sid in finalized_ids if sid in dep_ids})
-        total = len(dep_students)
-    else:
-        all_students = await student_repo.get_by_shift(shift_id)
-        done = len(finalized_ids)
-        total = len(all_students)
+        finalized_ids = await report_repo.get_finalized_student_ids(user.id, shift_id)
+        if department_id:
+            dep_students = await student_repo.get_by_department(department_id)
+            dep_ids = {s.id for s in dep_students}
+            done = len({sid for sid in finalized_ids if sid in dep_ids})
+            total = len(dep_students)
+        else:
+            all_students = await student_repo.get_by_shift(shift_id)
+            done = len(finalized_ids)
+            total = len(all_students)
 
+        await state.set_state(GenerationStates.finalized)
+        await safe_edit_text(
+            cb.message,
+            f"✅ <b>Отчёт для {student_name} сохранён!</b>\n\n"
+            f"Готово отчётов: <b>{done}/{total}</b>",
+            reply_markup=after_finalize_menu(done, total),
+        )
+        await cb.answer("Сохранено ✅")
+    except Exception as e:
+        logger.error(f"Finalize report error: {e}", exc_info=True)
+        # finalize уже выполнен в рамках сессии и будет закоммичен; сообщаем мягко.
+        await cb.answer("⚠️ Отчёт сохранён, но экран мог не обновиться.", show_alert=True)
 
-    await state.set_state(GenerationStates.finalized)
-    await cb.message.edit_text(
-        f"✅ <b>Отчёт для {student_name} сохранён!</b>\n\n"
-        f"Готово отчётов: <b>{done}/{total}</b>",
-        reply_markup=after_finalize_menu(done, total),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -424,11 +506,14 @@ async def manual_edit_text(
     )
     await state.update_data(current_report_text=new_text)
     await state.set_state(GenerationStates.reviewing)
-    await message.answer(
+    # safe_answer: текст уже сохранён в БД, сетевой сбой доставки не должен откатывать его.
+    await safe_answer(
+        message,
         f"✅ Полный текст отчёта для <b>{student_name}</b> сохранён.\n\n"
         "Можно сохранить/финализировать, исправить ещё или вернуться к списку детей.",
         reply_markup=report_review_keyboard(),
     )
+
 
 
 # ---------------------------------------------------------------------------
@@ -530,22 +615,26 @@ async def _apply_revision(
         await status_msg.delete()
         parts = _split_text(revised_text)
 
+        # safe_answer: правка уже сохранена в БД выше — доставка не должна её откатывать.
         for i, part in enumerate(parts):
             if i < len(parts) - 1:
-                await message.answer(part)
+                await safe_answer(message, part)
             else:
-                await message.answer(
+                await safe_answer(
+                    message,
                     part + "\n\n─────────────────\n"
                           "Исправленный отчёт. Сохранить или исправить ещё?",
                     reply_markup=report_review_keyboard(),
                 )
     except Exception as e:
         logger.error(f"Revision error: {e}", exc_info=True)
-        await status_msg.edit_text(
+        await safe_edit_text(
+            status_msg,
             "⚠️ Ошибка при применении правок. Попробуйте ещё раз.",
             reply_markup=report_review_keyboard(),
         )
         await state.set_state(GenerationStates.reviewing)
+
 
 
 # ---------------------------------------------------------------------------

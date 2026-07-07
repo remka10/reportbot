@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import socket
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
@@ -38,6 +39,11 @@ _polling_task: asyncio.Task | None = None
 
 def _make_bot() -> Bot:
     session = AiohttpSession(timeout=60)
+    # Форсим IPv4 для исходящих запросов к api.telegram.org.
+    # У контейнера нет IPv6-маршрута, но Docker-DNS периодически отдаёт AAAA-запись
+    # (api.telegram.org -> 2001:67c:...) → попытка IPv6 виснет и даёт
+    # TelegramNetworkError: Request timeout error. AF_INET убирает этот класс сбоев.
+    session._connector_init["family"] = socket.AF_INET
     return Bot(
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
