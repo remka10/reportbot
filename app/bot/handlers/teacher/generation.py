@@ -701,14 +701,18 @@ async def cb_next_child(
     from app.bot.handlers.teacher.shift import _show_children
 
     data = await state.get_data()
-    shift_id = data.get("shift_id")
-    if not shift_id:
-        await cb.answer("Сначала выберите смену.", show_alert=True)
+    # ИСПРАВЛЕНО: _show_children ожидает department_id, а не shift_id.
+    # Раньше сюда передавался shift_id → get_by_department(shift_id) не находил
+    # детей → ошибочно показывалось «В этом департаменте пока нет учащихся».
+    department_id = data.get("department_id")
+    if not department_id:
+        await cb.answer("Сначала выберите департамент.", show_alert=True)
         return
 
     await state.update_data(student_id=None, student_name=None, report_id=None)
     # ИСПРАВЛЕНО: передаём cb (CallbackQuery), а не cb.message — _show_children ожидает CallbackQuery
-    await _show_children(cb, user, session, state, shift_id)
+    await _show_children(cb, user, session, state, department_id)
+
 
 
 # ---------------------------------------------------------------------------
