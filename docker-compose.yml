@@ -7,6 +7,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
     networks:
       - reportbotnet
     ports:
@@ -44,7 +47,25 @@ services:
       retries: 10
       start_period: 15s
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly — сохраняем состояние FSM на диск, чтобы оно переживало
+    # перезапуск не только бота, но и самого redis.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - reportbotnet
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
   nginx:
+
     image: nginx:alpine
     restart: unless-stopped
     ports:
@@ -71,3 +92,6 @@ networks:
 volumes:
   postgres_data:
   reports_data:
+  redis_data:
+
+

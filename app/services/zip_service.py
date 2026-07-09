@@ -1,8 +1,10 @@
 # app/services/zip_service.py
+import asyncio
 import io
 import logging
 import zipfile
 from pathlib import Path
+
 
 from app.database.models import Report, Student, Shift, User
 
@@ -74,6 +76,32 @@ class ZipService:
 
         buf.seek(0)
         return buf, archive_name, added_count, failed_count
+
+    async def create_zip_async(
+        self,
+        report_items: list[dict],
+        shift: Shift,
+        teacher: User,
+        report_service,
+        as_pdf: bool = False,
+        archive_label: str | None = None,
+    ) -> tuple[io.BytesIO, str, int, int]:
+        """
+        Асинхронная обёртка над create_zip: генерация всех отчётов (PPTX/PDF)
+        синхронная и ДОЛГАЯ — выносим её в отдельный поток через
+        asyncio.to_thread, чтобы не блокировать event loop бота (иначе на время
+        сборки архива у всех пользователей «зависают» кнопки).
+        """
+        return await asyncio.to_thread(
+            self.create_zip,
+            report_items=report_items,
+            shift=shift,
+            teacher=teacher,
+            report_service=report_service,
+            as_pdf=as_pdf,
+            archive_label=archive_label,
+        )
+
 
 
 

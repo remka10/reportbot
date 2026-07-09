@@ -40,12 +40,14 @@ PPTX-сборщик отчёта «с нуля».
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import shutil
 import subprocess
 import zipfile
 from pathlib import Path
+
 
 
 from pptx import Presentation
@@ -781,6 +783,44 @@ class PptxService:
             q_answers=q_answers, shift_context=shift_context,
         )
         return self._to_pdf(pptx_path)
+
+    # ── АСИНХРОННЫЕ ОБЁРТКИ ────────────────────────────────────────────────
+    # Сборка PPTX (python-pptx + перепаковка zip со шрифтами) и конвертация в
+    # PDF (subprocess soffice, 10–20 сек) — СИНХРОННЫЕ и БЛОКИРУЮТ единственный
+    # event loop бота: пока идёт экспорт, ни одна кнопка ни у кого не отвечает.
+    # Поэтому тяжёлую работу выносим в отдельный поток через asyncio.to_thread —
+    # loop остаётся свободным и продолжает обрабатывать апдейты/кнопки.
+
+    async def generate_async(
+        self,
+        report: Report,
+        student: Student,
+        shift: Shift,
+        teacher: User,
+        q_answers: dict[int, str] | None = None,
+        shift_context: str | None = None,
+    ) -> Path:
+        return await asyncio.to_thread(
+            self.generate,
+            report=report, student=student, shift=shift, teacher=teacher,
+            q_answers=q_answers, shift_context=shift_context,
+        )
+
+    async def generate_pdf_async(
+        self,
+        report: Report,
+        student: Student,
+        shift: Shift,
+        teacher: User,
+        q_answers: dict[int, str] | None = None,
+        shift_context: str | None = None,
+    ) -> Path:
+        return await asyncio.to_thread(
+            self.generate_pdf,
+            report=report, student=student, shift=shift, teacher=teacher,
+            q_answers=q_answers, shift_context=shift_context,
+        )
+
 
 
 

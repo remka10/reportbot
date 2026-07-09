@@ -9,7 +9,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
 from fastapi import FastAPI
+
 
 from app.admin.router import install_memory_log_handler, router as admin_router
 from app.bot.middlewares.auth import AuthMiddleware
@@ -51,8 +53,27 @@ def _make_bot() -> Bot:
     )
 
 
+def _make_storage():
+    """FSM-хранилище: пытаемся использовать Redis (переживает рестарт бота).
+
+    Если Redis недоступен/не установлен — не роняем бота, а откатываемся на
+    MemoryStorage (состояние живёт только в памяти процесса). Так деплой не
+    ломается, даже если redis ещё не поднят.
+    """
+    try:
+        storage = RedisStorage.from_url(settings.redis_url)
+        logger.info("FSM storage: Redis (%s)", settings.redis_url)
+        return storage
+    except Exception as e:
+        logger.warning(
+            "Redis storage unavailable (%s) — falling back to MemoryStorage", e
+        )
+        return MemoryStorage()
+
+
 bot = _make_bot()
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher(storage=_make_storage())
+
 
 register_all_routers(dp)
 dp.update.middleware(DbSessionMiddleware(session_factory=AsyncSessionLocal))

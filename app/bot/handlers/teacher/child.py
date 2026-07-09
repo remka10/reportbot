@@ -23,11 +23,15 @@ router = Router(name="teacher_child")
 # Выбор ребёнка
 # ---------------------------------------------------------------------------
 
-@router.callback_query(ChildSelectStates.choosing_child, F.data.startswith("teacher:child:"))
+# Без фильтра по состоянию: callback_data «teacher:child:<id>» однозначно
+# определяет действие. Раньше стоял ChildSelectStates.choosing_child — если
+# состояние терялось/не совпадало, кнопка выбора ребёнка «залипала».
+@router.callback_query(F.data.startswith("teacher:child:"))
 async def cb_child_selected(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
     student_id = int(cb.data.split(":")[-1])
+
     await cb.answer()  # убираем "часики" на кнопке
 
     student_repo = StudentRepository(session)
@@ -90,7 +94,11 @@ async def cb_reopen_report(
 # ---------------------------------------------------------------------------
 
 
-@router.callback_query(QuestionStates.answering, F.data.startswith("q:prev:"))
+# Навигационные кнопки — без фильтра по состоянию: действие однозначно задаётся
+# callback_data. Раньше стоял QuestionStates.answering — при потере/несовпадении
+# состояния (напр. после генерации отчёта) старые кнопки навигации «залипали».
+# Защита от отсутствия выбранного ребёнка — внутри _go_to_question / хендлеров.
+@router.callback_query(F.data.startswith("q:prev:"))
 async def cb_prev_question(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
@@ -99,7 +107,7 @@ async def cb_prev_question(
     await _go_to_question(cb.message, state, user, session, question_num=num, edit=True)
 
 
-@router.callback_query(QuestionStates.answering, F.data.startswith("q:next:"))
+@router.callback_query(F.data.startswith("q:next:"))
 async def cb_next_question(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
@@ -108,7 +116,7 @@ async def cb_next_question(
     await _go_to_question(cb.message, state, user, session, question_num=num, edit=True)
 
 
-@router.callback_query(QuestionStates.answering, F.data.startswith("q:goto:"))
+@router.callback_query(F.data.startswith("q:goto:"))
 async def cb_goto_question(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
@@ -117,11 +125,14 @@ async def cb_goto_question(
     await _go_to_question(cb.message, state, user, session, question_num=num, edit=True)
 
 
-@router.callback_query(QuestionStates.answering, F.data == "q:skip")
+@router.callback_query(F.data == "q:skip")
 async def cb_skip_question(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
     data = await state.get_data()
+    if not data.get("student_id"):
+        await cb.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
+        return
     current_num = data.get("current_question_num", 1)
     total = data.get("questions_total", 1)
     await cb.answer()
@@ -134,14 +145,18 @@ async def cb_skip_question(
         )
 
 
-@router.callback_query(QuestionStates.answering, F.data == "q:list")
+@router.callback_query(F.data == "q:list")
 async def cb_questions_list(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
     from app.repositories.question_repo import QuestionRepository
     data = await state.get_data()
     student_id = data.get("student_id")
+    if not student_id:
+        await cb.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
+        return
     q_repo = QuestionRepository(session)
+
     a_repo = AnswerRepository(session)
     questions = list(await q_repo.get_all_active())
     answers = await a_repo.get_progress_map(user.id, [student_id]) if student_id else {}
@@ -183,10 +198,23 @@ async def _go_to_question(
     from app.repositories.question_repo import QuestionRepository
 
     data = await state.get_data()
-    student_id = data["student_id"]
-    student_name = data["student_name"]
+    # Защита от потерянного состояния: без выбранного ребёнка навигация по
+    # вопросам невозможна. Мягко просим начать заново, а не падаем KeyError.
+    student_id = data.get("student_id")
+    student_name = data.get("student_name")
+    if not student_id:
+        text = "❌ Сессия истекла. Начните заново командой /start"
+        if edit:
+            try:
+                await message_obj.edit_text(text)
+            except Exception:
+                await message_obj.answer(text)
+        else:
+            await message_obj.answer(text)
+        return
 
     q_repo = QuestionRepository(session)
+
     a_repo = AnswerRepository(session)
 
     questions = list(await q_repo.get_all_active())

@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     # Database
     database_url: str
 
+    # Redis (хранилище FSM-состояний aiogram; переживает рестарт контейнера бота)
+    redis_url: str = "redis://redis:6379/0"
+
+
     # AiTunnel LLM
     aitunnel_api_key: str = ""
     aitunnel_base_url: str = "https://api.aitunnel.ru/v1"

@@ -329,8 +329,13 @@ async def cb_view_report(
 # Финализация отчёта
 # ---------------------------------------------------------------------------
 
-@router.callback_query(GenerationStates.reviewing, F.data == "report:finalize")
+# ВАЖНО: без фильтра по состоянию. Раньше стоял GenerationStates.reviewing —
+# если FSM-состояние терялось/не совпадало, кнопка «Сохранить» не ловилась ни
+# одним хендлером и апдейт уходил в «not handled» (кнопка «залипала»).
+# callback_data однозначно определяет действие, поэтому состояние тут избыточно.
+@router.callback_query(F.data == "report:finalize")
 async def cb_finalize_report(
+
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
     data = await state.get_data()
@@ -383,8 +388,10 @@ async def cb_finalize_report(
 # Запрос на правку
 # ---------------------------------------------------------------------------
 
-@router.callback_query(GenerationStates.reviewing, F.data == "report:revise")
+# Без фильтра по состоянию — см. пояснение у report:finalize.
+@router.callback_query(F.data == "report:revise")
 async def cb_request_revision(cb: CallbackQuery, state: FSMContext) -> None:
+
     data = await state.get_data()
     current_text = ""
     report_id = data.get("report_id")

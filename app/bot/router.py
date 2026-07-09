@@ -12,6 +12,9 @@ from app.bot.handlers.teacher.questions import router as teacher_questions_route
 from app.bot.handlers.teacher.generation import router as teacher_generation_router
 from app.bot.handlers.teacher.export import router as teacher_export_router
 
+from app.bot.handlers.fallback import router as fallback_router
+
+
 
 def register_all_routers(dp: Dispatcher) -> None:
     """Регистрирует все роутеры в диспетчере."""
@@ -31,3 +34,8 @@ def register_all_routers(dp: Dispatcher) -> None:
     dp.include_router(teacher_questions_router)
     dp.include_router(teacher_generation_router)
     dp.include_router(teacher_export_router)
+
+    # ВАЖНО: fallback регистрируется ПОСЛЕДНИМ — он ловит любой апдейт, который
+    # не обработали роутеры выше (снимает «часики» на кнопке и пишет в лог).
+    dp.include_router(fallback_router)
+

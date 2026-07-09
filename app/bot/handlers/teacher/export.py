@@ -496,15 +496,16 @@ async def _export_single(
     try:
         pptx_svc = PptxService()
         if as_pdf:
-            file_path = pptx_svc.generate_pdf(
+            file_path = await pptx_svc.generate_pdf_async(
                 report=report, student=student, shift=shift, teacher=teacher,
                 shift_context=shift_context,
             )
         else:
-            file_path = pptx_svc.generate(
+            file_path = await pptx_svc.generate_async(
                 report=report, student=student, shift=shift, teacher=teacher,
                 shift_context=shift_context,
             )
+
             # Обновляем путь в БД (только для основного PPTX)
             await report_repo.finalize(report.id, docx_path=str(file_path))
 
@@ -643,7 +644,8 @@ async def _export_zip(
     try:
         pptx_svc = PptxService()
         zip_svc = ZipService()
-        zip_buffer, archive_name, added_count, failed_count = zip_svc.create_zip(
+        zip_buffer, archive_name, added_count, failed_count = await zip_svc.create_zip_async(
+
             report_items=report_items,
             shift=shift,
             teacher=teacher,
