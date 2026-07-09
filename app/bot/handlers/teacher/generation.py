@@ -116,9 +116,55 @@ async def safe_answer(
     return None
 
 
+# Пауза между частями длинного сообщения. Telegram лимитирует ~1 сообщение/сек
+# на чат: если слать части подряд без паузы, часть упирается во flood-limit и
+# «долетает» с задержкой (педагог видит «зависло, потом пришло»).
+_PART_DELAY = 0.4
+
+
+async def _send_parts(
+    message: Message,
+    parts: list[str],
+    final_suffix: str = "",
+    final_markup=None,
+) -> None:
+    """Отправляет длинный текст частями с паузой, чтобы не ловить flood-limit.
+
+    К последней части добавляет final_suffix и клавиатуру final_markup.
+    Все отправки идут через safe_answer — сетевой сбой не роняет хендлер.
+    """
+    total = len(parts)
+    for i, part in enumerate(parts):
+        is_last = i == total - 1
+        await safe_answer(
+            message,
+            part + final_suffix if is_last else part,
+            reply_markup=final_markup if is_last else None,
+        )
+        if not is_last:
+            await asyncio.sleep(_PART_DELAY)
+
+
+# ---------------------------------------------------------------------------
+# Busy-lock: защита от повторных запусков тяжёлых операций (LLM)
+# ---------------------------------------------------------------------------
+# Пока для педагога идёт генерация/правка отчёта (запрос к LLM 10–90 сек), он
+# может нетерпеливо жать кнопку ещё раз. Без защиты это запускало ВТОРОЙ запрос к
+# LLM параллельно → двойные ответы, гонки за одно сообщение, «зависания». Флаг в
+# FSM (llm_busy) не даёт запустить вторую операцию, пока не завершилась первая.
+
+async def _is_busy(state: FSMContext) -> bool:
+    return bool((await state.get_data()).get("llm_busy", False))
+
+
+async def _set_busy(state: FSMContext, value: bool) -> None:
+    await state.update_data(llm_busy=value)
+
+
 # ---------------------------------------------------------------------------
 # Проверка перед генерацией: все ли вопросы заполнены
 # ---------------------------------------------------------------------------
+
 
 
 @router.callback_query(F.data == "teacher:generate_check")
@@ -174,13 +220,26 @@ async def cb_generate_report(
         await cb.answer("Ошибка: не выбран ребёнок или смена.", show_alert=True)
         return
 
+    # Мгновенно снимаем «часики» с кнопки — ещё до тяжёлой работы (LLM 10–90 сек).
+    # Без этого Telegram держит кнопку «нажатой», и педагогу кажется, что всё зависло.
+    await cb.answer()
+
+    # Busy-lock: если генерация/правка уже идёт — не запускаем вторую (двойной тап
+    # по «Сгенерировать» иначе слал два параллельных запроса к LLM с гонками).
+    if await _is_busy(state):
+        await cb.answer("⏳ Уже генерирую, подождите…", show_alert=True)
+        return
+    await _set_busy(state, True)
+
     await state.set_state(GenerationStates.generating)
-    status_msg = await cb.message.edit_text(
+    status_msg = await safe_edit_text(
+        cb.message,
         f"⏳ <b>Генерирую отчёт для {student_name}...</b>\n\n"
-        f"Это займёт 10–30 секунд."
+        f"Это займёт 10–30 секунд.",
     )
 
     try:
+
         answer_repo = AnswerRepository(session)
         shift_repo = ShiftRepository(session)
 
@@ -247,27 +306,41 @@ async def cb_generate_report(
         await state.update_data(report_id=report_id)
         await state.set_state(GenerationStates.reviewing)
 
-        parts = _split_text(report_text)
-        await status_msg.delete()
-        for i, part in enumerate(parts):
-            if i < len(parts) - 1:
-                await safe_answer(cb.message, part)
-            else:
-                await safe_answer(
-                    cb.message,
-                    part + "\n\n─────────────────\n"
-                          "Отчёт готов. Сохранить или исправить?",
-                    reply_markup=report_review_keyboard(),
-                )
+        # Удаляем статус «Генерирую…» и шлём готовый отчёт частями с паузами
+        # (иначе части упираются во flood-limit Telegram и приходят с задержкой).
+        if status_msg is not None:
+            try:
+                await status_msg.delete()
+            except Exception:
+                logger.debug("status_msg.delete failed", exc_info=True)
+        await _send_parts(
+            cb.message,
+            _split_text(report_text),
+            final_suffix="\n\n─────────────────\n"
+                         "Отчёт готов. Сохранить или исправить?",
+            final_markup=report_review_keyboard(),
+        )
 
     except Exception as e:
         logger.error(f"Report generation error: {e}", exc_info=True)
-        await safe_edit_text(
-            status_msg,
-            "⚠️ Ошибка при генерации отчёта. Попробуйте ещё раз.",
-            reply_markup=generate_report_keyboard(),
-        )
+        if status_msg is not None:
+            await safe_edit_text(
+                status_msg,
+                "⚠️ Ошибка при генерации отчёта. Попробуйте ещё раз.",
+                reply_markup=generate_report_keyboard(),
+            )
+        else:
+            await safe_answer(
+                cb.message,
+                "⚠️ Ошибка при генерации отчёта. Попробуйте ещё раз.",
+                reply_markup=generate_report_keyboard(),
+            )
         await state.set_state(QuestionStates.answering)
+    finally:
+        # Снимаем busy-lock в любом случае — иначе после ошибки кнопка «Сгенерировать»
+        # осталась бы навсегда заблокированной («⏳ Уже генерирую…»).
+        await _set_busy(state, False)
+
 
 
 
@@ -318,11 +391,13 @@ async def cb_view_report(
         await cb.message.answer("⚠️ Сохранённый отчёт не найден.")
         return
 
-    final_text = _extract_final_report(report.generated_text)
-    parts = _split_text(final_text)
-    await cb.message.answer(f"📄 <b>Отчёт: {student_name}</b>")
-    for part in parts:
-        await cb.message.answer(part)
+    # Показываем ПОЛНЫЙ текст отчёта (блок ответов 1..13 + итоговый отчёт),
+    # а не только итоговую часть — педагог должен видеть отчёт целиком.
+    # Части шлём с паузами через _send_parts, иначе Telegram flood-limit
+    # доставляет их рывками (педагогу кажется, что «зависло, потом пришло»).
+    await safe_answer(cb.message, f"📄 <b>Отчёт: {student_name}</b>")
+    await _send_parts(cb.message, _split_text(report.generated_text))
+
 
 
 # ---------------------------------------------------------------------------
@@ -437,15 +512,15 @@ async def cb_ai_edit_report(
     await state.set_state(GenerationStates.waiting_revision)
     await cb.answer()
 
-    parts = _split_text(report.generated_text)
-    await cb.message.answer("📄 <b>Текущий полный текст отчёта:</b>")
-    for part in parts:
-        await cb.message.answer(part)
-    await cb.message.answer(
+    await safe_answer(cb.message, "📄 <b>Текущий полный текст отчёта:</b>")
+    await _send_parts(cb.message, _split_text(report.generated_text))
+    await safe_answer(
+        cb.message,
         "✏️ <b>Напишите что нужно исправить</b>\n\n"
         "Например: «Сделай тон более тёплым» или «Добавь про командную работу»\n\n"
-        "Можно написать текстом или отправить <b>голосовое сообщение</b> 🎤"
+        "Можно написать текстом или отправить <b>голосовое сообщение</b> 🎤",
     )
+
 
 
 @router.callback_query(F.data == "report:manual_edit")
@@ -471,14 +546,14 @@ async def cb_manual_edit_report(
     await state.update_data(report_id=report.id, current_report_text=report.generated_text)
     await state.set_state(GenerationStates.manual_editing)
     await cb.answer()
-    parts = _split_text(report.generated_text)
-    await cb.message.answer(f"📄 <b>Полный текст отчёта для {student_name}:</b>")
-    for part in parts:
-        await cb.message.answer(part)
-    await cb.message.answer(
+    await safe_answer(cb.message, f"📄 <b>Полный текст отчёта для {student_name}:</b>")
+    await _send_parts(cb.message, _split_text(report.generated_text))
+    await safe_answer(
+        cb.message,
         "⌨️ <b>Отправьте новым сообщением полный исправленный текст отчёта.</b>\n\n"
-        "Он заменит текущую версию целиком. Можно редактировать даже финализированный отчёт."
+        "Он заменит текущую версию целиком. Можно редактировать даже финализированный отчёт.",
     )
+
 
 
 @router.message(GenerationStates.manual_editing, F.text)
@@ -623,10 +698,18 @@ async def _apply_revision(
         await message.answer("⚠️ Ошибка: отчёт не найден.")
         return
 
+    # Busy-lock: правка уже идёт → не запускаем вторую (иначе двойная отправка
+    # текста подряд запускала бы два параллельных запроса к LLM с гонками).
+    if await _is_busy(state):
+        await message.answer("⏳ Уже применяю предыдущую правку, подождите…")
+        return
+    await _set_busy(state, True)
+
     status_msg = await message.answer(f"⏳ Применяю правки для {student_name}...")
     report_repo = ReportRepository(session)
 
     try:
+
         # Текущий (актуальный) текст отчёта. В модель отправляем именно его +
         # новую правку (НЕ всю растущую историю правок — иначе вход разрастается
         # в «полотно», а ответ упирается в лимит и обрывается на полуслове).
@@ -671,20 +754,20 @@ async def _apply_revision(
             content=revised_text,
         )
         await state.set_state(GenerationStates.reviewing)
-        await status_msg.delete()
-        parts = _split_text(revised_text)
+        try:
+            await status_msg.delete()
+        except Exception:
+            logger.debug("status_msg.delete failed", exc_info=True)
 
-        # safe_answer: правка уже сохранена в БД выше — доставка не должна её откатывать.
-        for i, part in enumerate(parts):
-            if i < len(parts) - 1:
-                await safe_answer(message, part)
-            else:
-                await safe_answer(
-                    message,
-                    part + "\n\n─────────────────\n"
-                          "Исправленный отчёт. Сохранить или исправить ещё?",
-                    reply_markup=report_review_keyboard(),
-                )
+        # safe_answer + паузы: правка уже сохранена в БД выше — доставка не должна
+        # её откатывать, а паузы между частями не дают ловить flood-limit Telegram.
+        await _send_parts(
+            message,
+            _split_text(revised_text),
+            final_suffix="\n\n─────────────────\n"
+                         "Исправленный отчёт. Сохранить или исправить ещё?",
+            final_markup=report_review_keyboard(),
+        )
     except Exception as e:
         logger.error(f"Revision error: {e}", exc_info=True)
         await safe_edit_text(
@@ -693,6 +776,11 @@ async def _apply_revision(
             reply_markup=report_review_keyboard(),
         )
         await state.set_state(GenerationStates.reviewing)
+    finally:
+        # Снимаем busy-lock в любом случае — иначе после ошибки правка осталась бы
+        # навсегда заблокированной («⏳ Уже применяю…»).
+        await _set_busy(state, False)
+
 
 
 

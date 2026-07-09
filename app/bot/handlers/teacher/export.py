@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 router = Router(name="teacher_export")
 
 
+# Busy-lock для экспорта: генерация файла/архива (PPTX→PDF через soffice, сборка
+# ZIP) занимает секунды–минуты. Без защиты нетерпеливые повторные нажатия «PPTX/PDF»
+# запускали бы параллельно несколько тяжёлых сборок → лишняя нагрузка и «зависания».
+async def _export_is_busy(state: FSMContext) -> bool:
+    return bool((await state.get_data()).get("export_busy", False))
+
+
+async def _export_set_busy(state: FSMContext, value: bool) -> None:
+    await state.update_data(export_busy=value)
+
+
+
 def _export_back_callback(user: User) -> str | None:
     """Куда возвращать пользователя с первого экрана экспорта."""
     return "admin:main" if user.role == UserRole.admin else None
@@ -484,6 +496,12 @@ async def _export_single(
         await cb.message.answer("⚠️ Ошибка: не найдены данные.")
         return
 
+    # Busy-lock: не даём запустить вторую генерацию файла, пока идёт текущая.
+    if await _export_is_busy(state):
+        await cb.answer("⏳ Уже генерирую файл, подождите…", show_alert=True)
+        return
+    await _export_set_busy(state, True)
+
     # Проставляем НОМЕР департамента ребёнка — сервис возьмёт из него цвет/имя.
     student.department_number = await _resolve_dep_number(
         session, student, department_id
@@ -496,6 +514,7 @@ async def _export_single(
     try:
         pptx_svc = PptxService()
         if as_pdf:
+
             file_path = await pptx_svc.generate_pdf_async(
                 report=report, student=student, shift=shift, teacher=teacher,
                 shift_context=shift_context,
@@ -524,9 +543,12 @@ async def _export_single(
     except Exception as e:
         logger.error(f"Export error: {e}", exc_info=True)
         await cb.message.answer("⚠️ Ошибка при генерации файла. Попробуйте ещё раз.")
+    finally:
+        await _export_set_busy(state, False)
 
 
 @router.callback_query(F.data == "export:single")
+
 async def cb_export_single(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
@@ -567,12 +589,19 @@ async def _export_zip(
         await cb.answer("Сначала выберите департамент.", show_alert=True)
         return
 
+    # Busy-lock: не собираем второй архив, пока идёт текущая сборка.
+    if await _export_is_busy(state):
+        await cb.answer("⏳ Уже собираю архив, подождите…", show_alert=True)
+        return
+    await _export_set_busy(state, True)
+
     status_text = (
         "⏳ Собираю архив департамента..."
         if export_scope == "department"
         else "⏳ Собираю архив всей смены..."
     )
     status_msg = await cb.message.edit_text(status_text)
+
 
     dep_repo = DepartmentRepository(session)
     report_repo = ReportRepository(session)
@@ -586,6 +615,7 @@ async def _export_zip(
             "⚠️ Нет финализированных отчётов для скачивания.",
             reply_markup=_export_menu_for_user(user),
         )
+        await _export_set_busy(state, False)
         return
 
     shift = await shift_repo.get_by_id(shift_id)
@@ -595,7 +625,9 @@ async def _export_zip(
             "⚠️ Ошибка: не найдены данные для экспорта.",
             reply_markup=_export_menu_for_user(user),
         )
+        await _export_set_busy(state, False)
         return
+
 
     department = await dep_repo.get_by_id(department_id) if department_id else None
     departments = await dep_repo.get_by_shift(shift_id)
@@ -639,11 +671,13 @@ async def _export_zip(
             else "⚠️ Нет финализированных отчётов для скачивания."
         )
         await status_msg.edit_text(empty_text, reply_markup=_export_menu_for_user(user))
+        await _export_set_busy(state, False)
         return
 
     try:
         pptx_svc = PptxService()
         zip_svc = ZipService()
+
         zip_buffer, archive_name, added_count, failed_count = await zip_svc.create_zip_async(
 
             report_items=report_items,
@@ -697,11 +731,15 @@ async def _export_zip(
         logger.error(f"ZIP export error: {e}", exc_info=True)
         await status_msg.edit_text(
             "⚠️ Ошибка при создании архива.",
+
             reply_markup=_export_menu_for_user(user),
         )
+    finally:
+        await _export_set_busy(state, False)
 
 
 @router.callback_query(F.data == "export:zip")
+
 async def cb_export_zip(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
