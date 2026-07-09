@@ -28,10 +28,15 @@ services:
       POSTGRES_DB: reportbot
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      # ВАЖНО: привязка к 127.0.0.1 — порт БД доступен ТОЛЬКО с localhost сервера,
+      # НЕ из интернета. Подключение снаружи — только через SSH-туннель.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - reportbotnet
+
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d reportbot"]
       interval: 5s

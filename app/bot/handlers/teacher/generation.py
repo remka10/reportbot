@@ -555,10 +555,51 @@ async def revision_voice(
 
 
 # ---------------------------------------------------------------------------
+# Сбор контекста департамента/смены
+# ---------------------------------------------------------------------------
+
+async def _build_shift_context(
+    session: AsyncSession,
+    user: User,
+    shift_id: int | None,
+    department_id: int | None,
+) -> str:
+    """Собирает контекст департамента/смены (тот же, что при генерации отчёта).
+
+    Используется при ИИ-правке отчёта, чтобы передать в LLM справочный фон
+    (мир лагеря + сюжет департамента). Логика идентична cb_generate_report:
+    берём контекст teacher_departments, с фолбэком на общий контекст
+    департамента и legacy-контекст смены; префиксуем названием департамента.
+    """
+    shift_context = ""
+    department = None
+    if department_id:
+        dep_repo = DepartmentRepository(session)
+        department = await dep_repo.get_by_id(department_id)
+        td = await dep_repo.get_teacher_department(user.id, department_id)
+        shift_context = (td.shift_context if td else "") or ""
+        # Фолбэк: контекст мог заполнить другой аккаунт по этому департаменту.
+        if not shift_context:
+            shift_context = await dep_repo.get_any_context(department_id)
+    if not shift_context and shift_id:
+        shift_repo = ShiftRepository(session)
+        ts = await shift_repo.get_teacher_shift(user.id, shift_id)
+        shift_context = (ts.shift_context if ts else "") or ""
+
+    if department_id and department:
+        shift_context = (
+            f"Департамент: {get_department_name(department.department_number)}\n\n"
+            f"{shift_context}"
+        ).strip()
+    return shift_context
+
+
+# ---------------------------------------------------------------------------
 # Применение правки
 # ---------------------------------------------------------------------------
 
 async def _apply_revision(
+
     message: Message,
     state: FSMContext,
     user: User,
@@ -567,6 +608,8 @@ async def _apply_revision(
 ) -> None:
     data = await state.get_data()
     report_id = data.get("report_id")
+    shift_id = data.get("shift_id")
+    department_id = data.get("department_id")
     student_name = data.get("student_name", "—")
 
     if not report_id:
@@ -584,6 +627,13 @@ async def _apply_revision(
         current_text = current_report.generated_text if current_report else ""
         prev_answers, _ = _split_report(current_text)
 
+        # Контекст департамента/смены — тот же, что и при генерации отчёта. Он
+        # передаётся в LLM как справочный фон, чтобы правки сохраняли мир лагеря
+        # и роль департамента (в промте помечен как контекст, а не факты).
+        shift_context = await _build_shift_context(
+            session, user, shift_id, department_id
+        )
+
         # Историю всё равно ведём для аудита/просмотра, но в LLM её не шлём.
         await report_repo.add_revision_message(
             report_id=report_id,
@@ -594,7 +644,9 @@ async def _apply_revision(
         revised_text = await llm.revise_report(
             current_report=current_text,
             revision_request=revision_request,
+            shift_context=shift_context,
         )
+
 
 
         # Гарантия сохранности ответов: если у отчёта был блок ответов 1..13,
