@@ -57,7 +57,8 @@ async def cb_fill_start(
     await state.set_state(AdminFillStates.waiting_shift_select)
     builder = InlineKeyboardBuilder()
     for s in shifts:
-        builder.button(text=f"[{s.id}] {s.name}", callback_data=f"fill_shift:{s.id}")
+        builder.button(text=f"{s.name}", callback_data=f"fill_shift:{s.id}")
+
     builder.button(text="← Назад", callback_data="admin:main")
     builder.adjust(1)
     await cb.message.edit_text(

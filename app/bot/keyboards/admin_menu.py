@@ -89,12 +89,82 @@ def shifts_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="➕ Создать смену",       callback_data="admin:shifts:create")],
-            [InlineKeyboardButton(text="👁 Список смен",         callback_data="admin:shifts:list")],
+            [InlineKeyboardButton(text="🗂 Список смен",         callback_data="admin:shifts:list")],
             [InlineKeyboardButton(text="👨‍🏫 Привязать педагога", callback_data="admin:shifts:assign")],
             [InlineKeyboardButton(text="🗑 Архивировать смену",  callback_data="admin:shifts:archive")],
+            [InlineKeyboardButton(text="📦 Архив смен",          callback_data="admin:shifts:archived")],
             [InlineKeyboardButton(text="← Назад",               callback_data="admin:main")],
         ]
     )
+
+
+def shifts_manage_keyboard(
+    shifts: list[Shift], back_to: str = "admin:shifts"
+) -> InlineKeyboardMarkup:
+    """Список смен-кнопок, открывающих карточку управления сменой."""
+    builder = InlineKeyboardBuilder()
+    for shift in shifts:
+        builder.button(
+            text=f"🏕 {shift.name}",
+            callback_data=f"shift_card:{shift.id}",
+        )
+    builder.button(text="← Назад", callback_data=back_to)
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def shift_card_keyboard(shift_id: int) -> InlineKeyboardMarkup:
+    """Карточка смены: все действия над конкретной сменой."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Переименовать",     callback_data=f"shift_rename:{shift_id}")],
+            [InlineKeyboardButton(text="📅 Изменить даты",     callback_data=f"shift_dates:{shift_id}")],
+            [InlineKeyboardButton(text="📖 Контекст (легенда)", callback_data=f"shift_context:{shift_id}")],
+            [InlineKeyboardButton(text="👨‍🏫 Педагоги смены",   callback_data=f"shift_teachers:{shift_id}")],
+            [InlineKeyboardButton(text="👦 Учащиеся смены",     callback_data=f"shift_students:{shift_id}")],
+            [InlineKeyboardButton(text="🗑 Архивировать",       callback_data=f"shift_card_archive:{shift_id}")],
+            [InlineKeyboardButton(text="← Назад к списку",      callback_data="admin:shifts:list")],
+        ]
+    )
+
+
+def shift_context_departments_keyboard(
+    departments: list[Department],
+    shift_id: int,
+    context_flags: dict[int, bool] | None = None,
+) -> InlineKeyboardMarkup:
+    """Выбор департамента для просмотра/редактирования контекста.
+
+    context_flags — {department_id: есть_ли_контекст}; для отметки 📝/⬜.
+    """
+    context_flags = context_flags or {}
+    builder = InlineKeyboardBuilder()
+    for d in departments:
+        mark = "📝" if context_flags.get(d.id) else "⬜"
+        builder.button(
+            text=f"{mark} {d.emoji} {d.name}",
+            callback_data=f"shift_ctx_dep:{d.id}",
+        )
+    builder.button(text="← Назад к смене", callback_data=f"shift_card:{shift_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def shift_context_actions_keyboard(
+    department_id: int, shift_id: int, has_context: bool
+) -> InlineKeyboardMarkup:
+    """Действия над контекстом департамента: изменить / удалить / назад."""
+    rows = [
+        [InlineKeyboardButton(text="✏️ Изменить контекст", callback_data=f"shift_ctx_edit:{department_id}")],
+    ]
+    if has_context:
+        rows.append(
+            [InlineKeyboardButton(text="🗑 Удалить контекст", callback_data=f"shift_ctx_clear:{department_id}")]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="← Назад", callback_data=f"shift_context:{shift_id}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def students_menu() -> InlineKeyboardMarkup:
@@ -128,7 +198,7 @@ def shifts_list_keyboard(shifts: list[Shift]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for shift in shifts:
         builder.button(
-            text=f"[{shift.id}] {shift.name}",
+            text=f"{shift.name}",
             callback_data=f"select_shift:{shift.id}",
         )
     builder.adjust(1)

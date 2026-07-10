@@ -1,13 +1,15 @@
 import logging
 from typing import Sequence
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
 from app.database.models import (
-    Department, TeacherDepartment, Shift, DEPARTMENTS, get_department_name,
+    Department, TeacherDepartment, Shift, User, UserRole,
+    DEPARTMENTS, get_department_name,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +156,57 @@ class DepartmentRepository:
         )
         await self.session.flush()
         return True
+
+    async def get_teachers_for_shift(
+        self, shift_id: int
+    ) -> list[tuple[User, Department]]:
+        """Возвращает список (педагог, департамент) для всех привязок в смене.
+
+        Используется в админке для карточки смены: показать, кто к каким
+        департаментам привязан. Админов исключаем (они привязываются к
+        департаментам технически, чтобы заполнять отчёты).
+        """
+        result = await self.session.execute(
+            select(User, Department)
+            .join(TeacherDepartment, TeacherDepartment.teacher_id == User.id)
+            .join(Department, Department.id == TeacherDepartment.department_id)
+            .where(
+                Department.shift_id == shift_id,
+                User.role == UserRole.teacher,
+            )
+            .order_by(Department.department_number, User.full_name)
+        )
+        return [(u, d) for u, d in result.all()]
+
+    async def unassign_teacher(
+        self, department_id: int, teacher_id: int
+    ) -> bool:
+        """Отвязать педагога от департамента."""
+        td = await self.session.get(
+            TeacherDepartment,
+            {"teacher_id": teacher_id, "department_id": department_id},
+        )
+        if td is None:
+            return False
+        await self.session.delete(td)
+        await self.session.flush()
+        logger.info(
+            f"Unassigned teacher_id={teacher_id} from department_id={department_id}"
+        )
+        return True
+
+    async def count_departments_with_context(self, shift_id: int) -> int:
+        """Сколько департаментов смены имеют заполненный контекст."""
+        result = await self.session.execute(
+            select(func.count(func.distinct(TeacherDepartment.department_id)))
+            .join(Department, Department.id == TeacherDepartment.department_id)
+            .where(
+                Department.shift_id == shift_id,
+                TeacherDepartment.shift_context.isnot(None),
+                TeacherDepartment.shift_context != "",
+            )
+        )
+        return result.scalar_one()
 
 
 

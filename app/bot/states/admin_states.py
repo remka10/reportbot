@@ -30,6 +30,17 @@ class ArchiveShiftStates(StatesGroup):
     confirm              = State()
 
 
+class EditShiftStates(StatesGroup):
+    """Редактирование смены из карточки: переименование и смена дат."""
+    waiting_new_name  = State()
+    waiting_new_dates = State()
+
+
+class ShiftContextStates(StatesGroup):
+    """Управление контекстом (легендой) департамента из админ-панели."""
+    waiting_context_text = State()
+
+
 class AssignTeacherStates(StatesGroup):
     waiting_shift_select      = State()
     waiting_department_select = State()

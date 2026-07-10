@@ -96,6 +96,48 @@ class ShiftRepository:
         await self.session.flush()
         return True
 
+    async def rename(self, shift_id: int, new_name: str) -> bool:
+        """Переименовать смену."""
+        shift = await self.session.get(Shift, shift_id)
+        if shift is None:
+            return False
+        shift.name = new_name
+        await self.session.flush()
+        logger.info(f"Renamed shift id={shift_id} -> {new_name!r}")
+        return True
+
+    async def update_dates(
+        self, shift_id: int, start_date: date, end_date: date
+    ) -> bool:
+        """Изменить даты смены."""
+        shift = await self.session.get(Shift, shift_id)
+        if shift is None:
+            return False
+        shift.start_date = start_date
+        shift.end_date = end_date
+        await self.session.flush()
+        logger.info(f"Updated dates for shift id={shift_id}")
+        return True
+
+    async def restore(self, shift_id: int) -> bool:
+        """Вернуть смену из архива (сделать активной)."""
+        shift = await self.session.get(Shift, shift_id)
+        if shift is None:
+            return False
+        shift.is_active = True
+        await self.session.flush()
+        logger.info(f"Restored shift id={shift_id}")
+        return True
+
+    async def get_all_archived(self) -> Sequence[Shift]:
+        """Все архивированные (неактивные) смены."""
+        result = await self.session.execute(
+            select(Shift)
+            .where(Shift.is_active == False)
+            .order_by(Shift.start_date.desc())
+        )
+        return result.scalars().all()
+
     async def archive(self, shift_id: int) -> bool:
         shift = await self.session.get(Shift, shift_id)
         if shift is None:

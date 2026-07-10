@@ -310,9 +310,11 @@ async def cb_export_dep(
     mode = data.get("export_mode", "department")
 
     if mode == "department":
+        shift = await ShiftRepository(session).get_by_id(department.shift_id)
+        shift_name = shift.name if shift else "Смена"
         await cb.message.edit_text(
             f"🏢 <b>Отчёты департамента</b>\n"
-            f"🏕 Смена {department.shift_id}\n"
+            f"🏕 {shift_name}\n"
             f"🏢 {department.name}\n\n"
             "Выберите формат архива:",
             reply_markup=export_format_keyboard(
