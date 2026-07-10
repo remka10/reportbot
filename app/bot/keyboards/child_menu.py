@@ -285,6 +285,31 @@ def finalized_report_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def confirm_reopen_keyboard() -> InlineKeyboardMarkup:
+    """Подтверждение возврата к анкете финализированного отчёта.
+
+    Предупреждаем, что при повторной генерации текущий сохранённый отчёт будет
+    заменён (старый текст удалён). «Подтвердить» → report:reopen_confirm,
+    «Назад» → report:back (вернуться к меню отчёта без изменений).
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Подтвердить",
+                    callback_data="report:reopen_confirm",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="← Назад",
+                    callback_data="report:back",
+                ),
+            ],
+        ]
+    )
+
+
 def back_to_report_keyboard() -> InlineKeyboardMarkup:
     """Кнопка возврата к меню отчёта из экранов просмотра/правки.
 
@@ -323,8 +348,8 @@ def report_review_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="✏️ Исправить текст",
-                    callback_data="report:revise",
+                    text="🤖 Исправить текст с помощью ИИ",
+                    callback_data="report:ai_edit",
                 ),
             ],
             [

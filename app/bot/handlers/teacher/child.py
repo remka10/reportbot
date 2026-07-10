@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.child_menu import (
     question_keyboard, questions_list_keyboard, generate_report_keyboard,
-    finalized_report_keyboard,
+    finalized_report_keyboard, confirm_reopen_keyboard,
 )
 from app.bot.states.teacher_states import ChildSelectStates, QuestionStates
 from app.database.models import User
@@ -61,6 +61,27 @@ async def cb_child_selected(
 
 
 @router.callback_query(F.data == "report:reopen")
+async def cb_reopen_confirm_prompt(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Показывает предупреждение перед возвратом к анкете финализированного отчёта.
+
+    Если педагог вернётся к вопросам и сгенерирует отчёт заново — текущий
+    сохранённый текст будет заменён (старый отчёт удалён). Поэтому сначала
+    просим подтверждение, и только по «Подтвердить» (report:reopen_confirm)
+    реально снимаем финализацию и открываем анкету.
+    """
+    await cb.answer()
+    await cb.message.edit_text(
+        "⚠️ <b>Внимание!</b>\n\n"
+        "Если вернуться к заполнению анкеты и сгенерировать отчёт заново, "
+        "текущий сохранённый отчёт будет <b>заменён</b> — старый текст будет удалён.\n\n"
+        "Продолжить?",
+        reply_markup=confirm_reopen_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "report:reopen_confirm")
 async def cb_reopen_report(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
 ) -> None:

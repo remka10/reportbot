@@ -373,7 +373,10 @@ async def cb_generate_report(
             content=report_text,
         )
 
-        await state.update_data(report_id=report_id)
+        # ВАЖНО: обновляем и current_report_text — иначе после повторной генерации
+        # («Вернуться к анкете» → «Сгенерировать заново») в FSM остаётся старый
+        # текст, и ИИ-правка показывала бы устаревший отчёт.
+        await state.update_data(report_id=report_id, current_report_text=report_text)
         await state.set_state(GenerationStates.reviewing)
 
         # Удаляем статус «Генерирую…» и шлём готовый отчёт частями с паузами
