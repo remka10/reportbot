@@ -11,7 +11,9 @@ from app.bot.keyboards.shift_menu import (
     context_preview_keyboard,
     edit_context_keyboard,
     confirm_delete_context_keyboard,
+    context_input_keyboard,
 )
+
 from app.bot.keyboards.child_menu import children_keyboard
 from app.bot.states.teacher_states import ShiftSelectStates, ChildSelectStates
 from app.database.models import User, get_department_name
@@ -235,10 +237,12 @@ async def change_context(callback: CallbackQuery, state: FSMContext) -> None:
         "✏️ <b>Введите новый контекст:</b>"
         f"{current_block}\n\n"
         "Расскажите о сюжете, чем занимались дети, ключевые события.\n"
-        "Можно написать текстом или отправить голосовое сообщение."
+        "Можно написать текстом или отправить голосовое сообщение.",
+        reply_markup=context_input_keyboard(),
     )
     await state.set_state(ShiftSelectStates.entering_context)
     await callback.answer()
+
 
 
 @router.message(ShiftSelectStates.entering_context, F.text)
@@ -341,10 +345,12 @@ async def redo_context_input(callback: CallbackQuery, state: FSMContext) -> None
     await callback.message.edit_text(
         "✏️ <b>Введите контекст заново:</b>\n\n"
         "Расскажите о сюжете, чем занимались дети, ключевые события.\n"
-        "Можно написать текстом или отправить голосовое сообщение."
+        "Можно написать текстом или отправить голосовое сообщение.",
+        reply_markup=context_input_keyboard(),
     )
     await state.set_state(ShiftSelectStates.entering_context)
     await callback.answer()
+
 
 
 @router.callback_query(
@@ -357,10 +363,12 @@ async def ask_revision_comment(callback: CallbackQuery, state: FSMContext) -> No
         "Опишите, что именно поправить в контексте (например: "
         "«убери про поход», «добавь, что дети победили в конкурсе», "
         "«сделай короче»).\n\n"
-        "Можно написать текстом или отправить <b>голосовое сообщение</b>."
+        "Можно написать текстом или отправить <b>голосовое сообщение</b>.",
+        reply_markup=context_input_keyboard(),
     )
     await state.set_state(ShiftSelectStates.revising_context)
     await callback.answer()
+
 
 
 async def _revise_and_preview(
@@ -459,9 +467,10 @@ async def start_manual_context(callback: CallbackQuery, state: FSMContext) -> No
             "\n\nТекущий вариант (можно скопировать и поправить):\n\n"
             f"<code>{current}</code>"
         )
-    await callback.message.edit_text(text)
+    await callback.message.edit_text(text, reply_markup=context_input_keyboard())
     await state.set_state(ShiftSelectStates.manual_context)
     await callback.answer()
+
 
 
 @router.message(ShiftSelectStates.manual_context, F.text)

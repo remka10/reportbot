@@ -121,6 +121,26 @@ def confirm_delete_context_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def context_input_keyboard() -> InlineKeyboardMarkup:
+    """Кнопка «Назад» для экранов ввода/правки контекста смены.
+
+    Ведёт строго назад — к списку детей департамента (именно оттуда открывается
+    работа с контекстом кнопкой «✏️ Изменить контекст смены»). Нужна, чтобы
+    педагог мог отказаться от ввода контекста и не «застрять» в состоянии
+    ожидания текста/голоса без единой кнопки на экране.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="← Назад к списку детей",
+                    callback_data="teacher:child_list",
+                )
+            ]
+        ]
+    )
+
+
 def context_preview_keyboard() -> InlineKeyboardMarkup:
     """
     Кнопки после того как ИИ оформил надиктованный контекст смены.

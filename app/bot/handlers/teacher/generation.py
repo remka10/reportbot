@@ -11,6 +11,8 @@ from app.bot.keyboards.child_menu import (
     report_review_keyboard,
     generate_report_keyboard,
     confirm_generate_keyboard,
+    finalized_report_keyboard,
+    back_to_report_keyboard,
 )
 from app.repositories.question_repo import QuestionRepository
 
@@ -159,6 +161,74 @@ async def _is_busy(state: FSMContext) -> bool:
 
 async def _set_busy(state: FSMContext, value: bool) -> None:
     await state.update_data(llm_busy=value)
+
+
+# ---------------------------------------------------------------------------
+# Возврат к меню отчёта из экранов просмотра/правки
+# ---------------------------------------------------------------------------
+
+# ВАЖНО: без фильтра по состоянию — кнопка «← Назад к меню отчёта» должна
+# срабатывать из любого экрана (просмотр/ИИ-правка/ручная правка/ввод правки),
+# даже если FSM-состояние потерялось. callback_data однозначно определяет
+# действие, поэтому состояние тут избыточно и только мешало бы.
+@router.callback_query(F.data == "report:back")
+async def cb_back_to_report(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    """Возвращает педагога к меню текущего отчёта.
+
+    Логика навигации «строго назад по меню»:
+      • есть финализированный отчёт → меню финализированного отчёта
+        (finalized_report_keyboard — «Посмотреть/Скачать/Редактировать…»);
+      • есть черновик отчёта → меню черновика (report_review_keyboard —
+        «Сохранить/Исправить/…»);
+      • отчёта нет / потеряна сессия → откат к списку детей департамента.
+    """
+    data = await state.get_data()
+    student_id = data.get("student_id")
+    shift_id = data.get("shift_id")
+    department_id = data.get("department_id")
+    student_name = data.get("student_name", "—")
+
+    await cb.answer()
+
+    # Фолбэк: сессия по отчёту потеряна — возвращаемся к списку детей.
+    if not student_id or not shift_id:
+        if department_id:
+            from app.bot.handlers.teacher.shift import _show_children
+            await _show_children(cb, user, session, state, department_id)
+            return
+        await safe_answer(cb.message, "⚠️ Отчёт не найден. Откройте ребёнка из списка ещё раз.")
+        return
+
+    report_repo = ReportRepository(session)
+    report = await report_repo.get_by_student(user.id, student_id, shift_id)
+
+    # Отчёта нет — возвращаемся к списку детей (там есть навигация дальше).
+    if report is None or not (report.generated_text or "").strip():
+        if department_id:
+            from app.bot.handlers.teacher.shift import _show_children
+            await _show_children(cb, user, session, state, department_id)
+            return
+        await safe_answer(cb.message, "⚠️ Отчёт не найден. Откройте ребёнка из списка ещё раз.")
+        return
+
+    if getattr(report, "is_finalized", False):
+        await state.update_data(report_id=report.id, current_report_text=report.generated_text)
+        await state.set_state(GenerationStates.finalized)
+        await safe_answer(
+            cb.message,
+            f"📄 <b>Отчёт для {student_name}</b>\n\nВыберите действие:",
+            reply_markup=finalized_report_keyboard(),
+        )
+    else:
+        await state.update_data(report_id=report.id, current_report_text=report.generated_text)
+        await state.set_state(GenerationStates.reviewing)
+        await safe_answer(
+            cb.message,
+            f"📄 <b>Черновик отчёта для {student_name}</b>\n\nВыберите действие:",
+            reply_markup=report_review_keyboard(),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -388,15 +458,23 @@ async def cb_view_report(
     report_repo = ReportRepository(session)
     report = await report_repo.get_by_student(user.id, student_id, shift_id)
     if not report or not (report.generated_text or "").strip():
-        await cb.message.answer("⚠️ Сохранённый отчёт не найден.")
+        await cb.message.answer(
+            "⚠️ Сохранённый отчёт не найден.",
+            reply_markup=back_to_report_keyboard(),
+        )
         return
 
     # Показываем ПОЛНЫЙ текст отчёта (блок ответов 1..13 + итоговый отчёт),
     # а не только итоговую часть — педагог должен видеть отчёт целиком.
     # Части шлём с паузами через _send_parts, иначе Telegram flood-limit
     # доставляет их рывками (педагогу кажется, что «зависло, потом пришло»).
+    # К последней части прикрепляем кнопку «← Назад к меню отчёта».
     await safe_answer(cb.message, f"📄 <b>Отчёт: {student_name}</b>")
-    await _send_parts(cb.message, _split_text(report.generated_text))
+    await _send_parts(
+        cb.message,
+        _split_text(report.generated_text),
+        final_markup=back_to_report_keyboard(),
+    )
 
 
 
@@ -483,7 +561,8 @@ async def cb_request_revision(cb: CallbackQuery, state: FSMContext) -> None:
     )
     if current_text:
         text = f"📄 <b>Текущий полный текст отчёта:</b>\n\n<blockquote>{current_text}</blockquote>\n\n" + text
-    await cb.message.answer(text)
+    # Кнопка «← Назад к меню отчёта» — чтобы можно было отказаться от правки.
+    await cb.message.answer(text, reply_markup=back_to_report_keyboard())
 
 
 @router.callback_query(F.data == "report:ai_edit")
@@ -514,11 +593,13 @@ async def cb_ai_edit_report(
 
     await safe_answer(cb.message, "📄 <b>Текущий полный текст отчёта:</b>")
     await _send_parts(cb.message, _split_text(report.generated_text))
+    # Кнопка «← Назад к меню отчёта» — чтобы можно было отказаться от ИИ-правки.
     await safe_answer(
         cb.message,
         "✏️ <b>Напишите что нужно исправить</b>\n\n"
         "Например: «Сделай тон более тёплым» или «Добавь про командную работу»\n\n"
         "Можно написать текстом или отправить <b>голосовое сообщение</b> 🎤",
+        reply_markup=back_to_report_keyboard(),
     )
 
 
@@ -548,10 +629,12 @@ async def cb_manual_edit_report(
     await cb.answer()
     await safe_answer(cb.message, f"📄 <b>Полный текст отчёта для {student_name}:</b>")
     await _send_parts(cb.message, _split_text(report.generated_text))
+    # Кнопка «← Назад к меню отчёта» — чтобы можно было отказаться от ручной правки.
     await safe_answer(
         cb.message,
         "⌨️ <b>Отправьте новым сообщением полный исправленный текст отчёта.</b>\n\n"
         "Он заменит текущую версию целиком. Можно редактировать даже финализированный отчёт.",
+        reply_markup=back_to_report_keyboard(),
     )
 
 
@@ -753,6 +836,7 @@ async def _apply_revision(
             role=DialogRole.assistant,
             content=revised_text,
         )
+        await state.update_data(current_report_text=revised_text)
         await state.set_state(GenerationStates.reviewing)
         try:
             await status_msg.delete()
@@ -829,7 +913,3 @@ async def cb_teacher_export_redirect(
         reply_markup=export_mode_menu(),
     )
     await cb.answer()
-
-
-
-

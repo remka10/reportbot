@@ -285,6 +285,32 @@ def finalized_report_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def back_to_report_keyboard() -> InlineKeyboardMarkup:
+    """Кнопка возврата к меню отчёта из экранов просмотра/правки.
+
+    Ведёт на report:back — обработчик восстанавливает меню текущего отчёта
+    (финализированный/черновик) для выбранного ребёнка, а если отчёта нет —
+    возвращает к списку детей. Кнопка списка детей продублирована как надёжный
+    фолбэк на случай, если сессия по отчёту потерялась.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="← Назад к меню отчёта",
+                    callback_data="report:back",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👦 К списку детей",
+                    callback_data="teacher:child_list",
+                ),
+            ],
+        ]
+    )
+
+
 def report_review_keyboard() -> InlineKeyboardMarkup:
     """Кнопки после получения сгенерированного отчёта."""
     return InlineKeyboardMarkup(

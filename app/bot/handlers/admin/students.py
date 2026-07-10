@@ -222,8 +222,10 @@ async def edit_student_selected(cb: CallbackQuery, state: FSMContext, session: A
     await state.update_data(student_id=student_id)
     await state.set_state(EditStudentStates.waiting_new_name)
     await cb.message.edit_text(
-        f"Текущее имя: <b>{student.full_name if student else '—'}</b>\nВведите новое имя:"
+        f"Текущее имя: <b>{student.full_name if student else '—'}</b>\nВведите новое имя:",
+        reply_markup=back_keyboard("admin:students"),
     )
+
 
 
 @router.message(EditStudentStates.waiting_new_name, F.text)
