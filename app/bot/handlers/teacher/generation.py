@@ -557,13 +557,17 @@ async def cb_request_revision(cb: CallbackQuery, state: FSMContext) -> None:
         # session здесь нет, поэтому используем только сохранённый в FSM текст при наличии.
         current_text = data.get("current_report_text", "")
     await state.set_state(GenerationStates.waiting_revision)
+    # Длинный текст отчёта отправляем ОТДЕЛЬНО и частями (через _split_text),
+    # иначе одно сообщение с полным отчётом в blockquote превышало лимит
+    # Telegram 4096 → MESSAGE_TOO_LONG.
+    if current_text:
+        await cb.message.answer("📄 <b>Текущий полный текст отчёта:</b>")
+        await _send_parts(cb.message, _split_text(current_text))
     text = (
         "✏️ <b>Напишите что нужно исправить</b>\n\n"
         "Например: «Сделай тон более тёплым» или «Добавь про командную работу»\n\n"
         "Можно написать текстом или отправить <b>голосовое сообщение</b> 🎤"
     )
-    if current_text:
-        text = f"📄 <b>Текущий полный текст отчёта:</b>\n\n<blockquote>{current_text}</blockquote>\n\n" + text
     # Кнопка «← Назад к меню отчёта» — чтобы можно было отказаться от правки.
     await cb.message.answer(text, reply_markup=back_to_report_keyboard())
 
@@ -715,7 +719,7 @@ async def revision_voice(
         if not request or len(request.strip()) < 3:
             await message.answer("⚠️ Не удалось распознать. Напишите правку текстом.")
             return
-        await message.answer(f"Распознано: <i>{request}</i>")
+        await message.answer(f"Распознано: <i>{_split_text(request)[0]}</i>")
         await _apply_revision(message, state, user, session, request.strip())
     except Exception as e:
         logger.error(f"Revision voice error: {e}", exc_info=True)

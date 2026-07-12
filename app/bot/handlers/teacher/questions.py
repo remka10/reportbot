@@ -11,8 +11,10 @@ from app.bot.keyboards.child_menu import generate_report_keyboard
 from app.bot.states.teacher_states import QuestionStates
 from app.database.base import AsyncSessionLocal
 from app.database.models import User
+from app.bot.utils.text import truncate_for_telegram
 from app.repositories.answer_repo import AnswerRepository
 from app.services.stt_service import STTService
+
 
 logger = logging.getLogger(__name__)
 router = Router(name="teacher_questions")
@@ -132,10 +134,13 @@ async def _transcribe_and_save(
             )
             await session.commit()
 
+        # Обрезаем распознанный текст для уведомления: длинное голосовое вместе
+        # с разметкой могло превысить лимит Telegram 4096 → MESSAGE_TOO_LONG.
+        # Полный ответ сохранён в БД и виден при открытии вопроса.
         await bot.send_message(
             chat_id,
             f"✅ Вопрос {question_num} — ответ распознан и сохранён:\n"
-            f"<blockquote>{clean_answer}</blockquote>",
+            f"<blockquote>{truncate_for_telegram(clean_answer, limit=3000)}</blockquote>",
         )
 
     except Exception as e:

@@ -16,6 +16,7 @@ from app.bot.keyboards.shift_menu import (
 
 from app.bot.keyboards.child_menu import children_keyboard
 from app.bot.states.teacher_states import ShiftSelectStates, ChildSelectStates
+from app.bot.utils.text import truncate_for_telegram
 from app.database.models import User, get_department_name
 from app.repositories.shift_repo import ShiftRepository
 from app.repositories.department_repo import DepartmentRepository
@@ -82,7 +83,7 @@ async def _beautify_and_preview(
     await processing_msg.delete()
     await message.answer(
         "✨ <b>Вот оформленный контекст смены:</b>\n\n"
-        f"<i>{beautified}</i>\n\n"
+        f"<i>{truncate_for_telegram(beautified)}</i>\n\n"
         "Сохранить этот вариант, переформулировать заново "
         "или ввести контекст заново?",
         reply_markup=context_preview_keyboard(),
@@ -231,7 +232,7 @@ async def use_existing_context(
 )
 async def change_context(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    current = (data.get("current_context") or "").strip()
+    current = truncate_for_telegram((data.get("current_context") or "").strip())
     current_block = f"\n\n<b>Текущий контекст:</b>\n<i>{current}</i>\n" if current else ""
     await callback.message.edit_text(
         "✏️ <b>Введите новый контекст:</b>"
@@ -328,7 +329,7 @@ async def regenerate_beautified_context(
         await state.update_data(pending_context=beautified)
         await callback.message.answer(
             "✨ <b>Новый вариант контекста:</b>\n\n"
-            f"<i>{beautified}</i>\n\n"
+            f"<i>{truncate_for_telegram(beautified)}</i>\n\n"
             "Сохранить, переформулировать ещё раз или ввести заново?",
             reply_markup=context_preview_keyboard(),
         )
@@ -400,7 +401,7 @@ async def _revise_and_preview(
         await state.set_state(ShiftSelectStates.preview_context)
         await message.answer(
             "✨ <b>Текущий контекст смены:</b>\n\n"
-            f"<i>{previous}</i>",
+            f"<i>{truncate_for_telegram(previous)}</i>",
             reply_markup=context_preview_keyboard(),
         )
         return
@@ -410,7 +411,7 @@ async def _revise_and_preview(
     await processing_msg.delete()
     await message.answer(
         "✨ <b>Исправленный контекст смены:</b>\n\n"
-        f"<i>{revised}</i>\n\n"
+        f"<i>{truncate_for_telegram(revised)}</i>\n\n"
         "Сохранить, исправить ещё раз, переформулировать или ввести заново?",
         reply_markup=context_preview_keyboard(),
     )
@@ -465,7 +466,7 @@ async def start_manual_context(callback: CallbackQuery, state: FSMContext) -> No
     if current:
         text += (
             "\n\nТекущий вариант (можно скопировать и поправить):\n\n"
-            f"<code>{current}</code>"
+            f"<code>{truncate_for_telegram(current)}</code>"
         )
     await callback.message.edit_text(text, reply_markup=context_input_keyboard())
     await state.set_state(ShiftSelectStates.manual_context)
@@ -679,7 +680,7 @@ async def edit_context_from_list(
         current_context = await dep_repo.get_any_context(department_id)
     await state.update_data(current_context=current_context)
     current_block = (
-        f"\n\n<b>Текущий контекст:</b>\n<i>{current_context}</i>\n"
+        f"\n\n<b>Текущий контекст:</b>\n<i>{truncate_for_telegram(current_context)}</i>\n"
         if current_context else ""
     )
 
@@ -704,7 +705,7 @@ async def delete_context(
     if not department_id:
         await callback.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
         return
-    current = (data.get("current_context") or "").strip()
+    current = truncate_for_telegram((data.get("current_context") or "").strip())
     current_block = f"\n\n<i>{current}</i>" if current else ""
     await callback.message.edit_text(
         "🗑 <b>Удалить контекст смены?</b>"

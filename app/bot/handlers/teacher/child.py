@@ -10,6 +10,7 @@ from app.bot.keyboards.child_menu import (
     finalized_report_keyboard, confirm_reopen_keyboard,
 )
 from app.bot.states.teacher_states import ChildSelectStates, QuestionStates
+from app.bot.utils.text import truncate_for_telegram
 from app.database.models import User
 from app.repositories.answer_repo import AnswerRepository
 from app.repositories.report_repo import ReportRepository
@@ -277,7 +278,12 @@ async def _go_to_question(
         f"🎤 <i>Ответьте голосом или текстом.</i>"
     )
     if existing_answer:
-        text += f"\n\n<b>Текущий ответ:</b>\n<blockquote>{existing_answer.answer_text}</blockquote>"
+        # Обрезаем ответ: длинный текст (напр. расшифровка голосового) вместе с
+        # разметкой мог превысить лимит Telegram 4096 → MESSAGE_TOO_LONG, и
+        # ребёнок со значком ⏳ «не нажимался». Полный ответ всё равно виден при
+        # ответе на вопрос заново.
+        answer_preview = truncate_for_telegram(existing_answer.answer_text, limit=2500)
+        text += f"\n\n<b>Текущий ответ:</b>\n<blockquote>{answer_preview}</blockquote>"
 
 
     keyboard = question_keyboard(
@@ -285,7 +291,13 @@ async def _go_to_question(
         total=total,
         has_prev=question_num > 1,
     )
+    # Дополнительная защита: если сообщение всё же не удалось отправить/
+    # отредактировать (в т.ч. из-за длины), не роняем хендлер, а шлём новым.
     if edit:
-        await message_obj.edit_text(text, reply_markup=keyboard)
+        try:
+            await message_obj.edit_text(text, reply_markup=keyboard)
+        except Exception:
+            logger.warning("edit_text failed in _go_to_question, fallback to answer", exc_info=True)
+            await message_obj.answer(text, reply_markup=keyboard)
     else:
         await message_obj.answer(text, reply_markup=keyboard)
