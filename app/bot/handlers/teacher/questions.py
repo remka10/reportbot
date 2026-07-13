@@ -13,7 +13,8 @@ from app.database.base import AsyncSessionLocal
 from app.database.models import User
 from app.bot.utils.text import truncate_for_telegram
 from app.repositories.answer_repo import AnswerRepository
-from app.services.stt_service import STTService
+from app.services.stt_service import STTService, VoiceDownloadError
+
 
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,20 @@ async def _transcribe_and_save(
             f"<blockquote>{truncate_for_telegram(clean_answer, limit=3000)}</blockquote>",
         )
 
+    except VoiceDownloadError as e:
+        # Не смогли скачать голосовое из Telegram (сеть/таймаут) — это НЕ ошибка
+        # распознавания. Сообщаем отдельно, чтобы педагог понял, что нужно
+        # просто переотправить голос.
+        logger.warning(f"Voice download error (q{question_num}): {e}")
+        try:
+            await bot.send_message(
+                chat_id,
+                f"⚠️ Вопрос {question_num}: не удалось загрузить голосовое из Telegram "
+                "(временный сетевой сбой). Отправьте его ещё раз или ответьте текстом.",
+            )
+        except Exception:
+            logger.error("Failed to notify user about download error", exc_info=True)
+
     except Exception as e:
         logger.error(f"Background voice transcription error (q{question_num}): {e}", exc_info=True)
         try:
@@ -153,6 +168,7 @@ async def _transcribe_and_save(
             )
         except Exception:
             logger.error("Failed to notify user about transcription error", exc_info=True)
+
 
 
 # ---------------------------------------------------------------------------
