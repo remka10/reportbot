@@ -16,6 +16,8 @@ from fastapi import FastAPI
 from app.admin.router import install_memory_log_handler, router as admin_router
 from app.bot.middlewares.auth import AuthMiddleware
 from app.bot.middlewares.db_session import DbSessionMiddleware
+from app.bot.middlewares.timing import TimingMiddleware
+
 from app.bot.router import register_all_routers
 from app.config import get_settings
 from app.database.base import AsyncSessionLocal, engine
@@ -76,8 +78,13 @@ dp = Dispatcher(storage=_make_storage())
 
 
 register_all_routers(dp)
+# Порядок регистрации = порядок «снаружи внутрь». TimingMiddleware — самый внешний,
+# чтобы замерять полное время обработки апдейта (включая БД-сессию и auth).
+# Затем DbSessionMiddleware → AuthMiddleware (порядок этих двух КРИТИЧЕН, §6).
+dp.update.middleware(TimingMiddleware())
 dp.update.middleware(DbSessionMiddleware(session_factory=AsyncSessionLocal))
 dp.update.middleware(AuthMiddleware())
+
 
 
 async def _run_polling() -> None:

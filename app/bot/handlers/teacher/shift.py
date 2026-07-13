@@ -620,16 +620,26 @@ async def back_to_child_list(
     callback: CallbackQuery, user: User, session: AsyncSession, state: FSMContext
 ) -> None:
     """Возврат к списку детей."""
-    data = await state.get_data()
-    department_id = data.get("department_id")
+    try:
+        data = await state.get_data()
+        department_id = data.get("department_id")
 
-    if not department_id:
-        await callback.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
-        return
+        if not department_id:
+            await callback.answer("❌ Сессия истекла. Начните заново /start", show_alert=True)
+            return
 
-    await _show_children(callback, user, session, state, department_id,
-                         page=data.get("child_page", 0))
-    await callback.answer()
+        await _show_children(callback, user, session, state, department_id,
+                             page=data.get("child_page", 0))
+        await callback.answer()
+    except Exception as e:
+        # Именно здесь ловился TelegramNetworkError при edit_text (см. лог 00:01:18):
+        # без своего try/except исключение долетало до middleware, а пользователь
+        # не получал никакой реакции. Теперь показываем понятное сообщение.
+        logger.exception(f"Error in back_to_child_list: {e}")
+        await callback.answer(
+            "⚠️ Не удалось обновить список. Попробуйте ещё раз.", show_alert=True
+        )
+
 
 
 @router.callback_query(F.data.startswith("teacher:child_page:"))
