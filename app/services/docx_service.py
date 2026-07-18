@@ -39,7 +39,8 @@ from pathlib import Path
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor as DocxRGBColor
+from docx.shared import Emu, Inches, Pt, RGBColor as DocxRGBColor
+
 
 # RGBColor из python-pptx нужен для _hex_to_rgb (его импортирует pptx_service).
 from pptx.dml.color import RGBColor as PptxRGBColor
@@ -57,6 +58,9 @@ IMG_LOGO_BOTTOM = ASSETS_DIR / "logo_bottom.png"
 IMG_LEGEND_BLOCK = ASSETS_DIR / "legend_block.png"
 IMG_TEACHERS_BLOCK = ASSETS_DIR / "teachers_block.png"
 IMG_TUTORS_BLOCK = ASSETS_DIR / "tutors_block.png"
+# Тонкая горизонтальная линия-разделитель (между профилем и остальным контентом).
+IMG_SEPARATOR_LINE = ASSETS_DIR / "separator_line.png"
+
 
 FONT_REGULAR = ASSETS_DIR / "calleo-regular.otf"
 FONT_SEMIBOLD = ASSETS_DIR / "calleo-semibold.otf"
@@ -163,9 +167,31 @@ def transliterate(text: str) -> str:
     return clean.strip('_')
 
 
+# Символы, недопустимые в именах файлов (Windows/Linux). Кириллицу сохраняем.
+_ILLEGAL_FILENAME_RE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+
+
+def _clean_name_part(full_name: str) -> str:
+    """«Фамилия Имя Отчество» → «Фамилия_Имя_Отчество» на русском.
+
+    Пробелы заменяем на подчёркивания, вырезаем недопустимые в имени файла
+    символы, схлопываем повторные подчёркивания. Кириллица остаётся как есть.
+    """
+    name = (full_name or "").strip()
+    name = _ILLEGAL_FILENAME_RE.sub("", name)
+    # Все пробельные последовательности → одиночное подчёркивание.
+    name = re.sub(r"\s+", "_", name)
+    name = re.sub(r"_+", "_", name).strip("_")
+    return name or "Без_имени"
+
+
 def safe_filename(student_name: str) -> Path:
-    """report_IvanovIvan.docx"""
-    return Path(f"report_{transliterate(student_name)}.docx")
+    """Отчет_Сотрудника_Фамилия_Имя_Отчество.docx (на русском).
+
+    Если отчества нет — «Отчет_Сотрудника_Фамилия_Имя.docx».
+    """
+    return Path(f"Отчет_Сотрудника_{_clean_name_part(student_name)}.docx")
+
 
 
 def safe_pptx_filename(student_name: str) -> Path:
@@ -257,6 +283,44 @@ def _hex_to_docx_rgb(hex_color: str) -> DocxRGBColor:
     return DocxRGBColor(
         int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
     )
+
+
+# ─── Геометрия изображений ────────────────────────────────────────────────────
+
+def _png_size(path: Path) -> tuple[int, int]:
+    """Возвращает (width, height) PNG в пикселях, читая заголовок IHDR.
+
+    Без PIL: у PNG первые 8 байт — сигнатура, затем чанк IHDR, где ширина и
+    высота лежат как два big-endian uint32 по смещениям 16 и 20.
+    """
+    with open(path, "rb") as f:
+        head = f.read(24)
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        # Не PNG или битый заголовок — вернём квадрат, чтобы не делить на ноль.
+        return 1, 1
+    w = int.from_bytes(head[16:20], "big")
+    h = int.from_bytes(head[20:24], "big")
+    return (w or 1), (h or 1)
+
+
+def _rendered_height_emu(path: Path, width_emu: int) -> int:
+    """Высота изображения в EMU при отрисовке на заданную ширину (с сохранением
+    пропорций). Нужна, чтобы зарезервировать место под нижний логотип в footer."""
+    w_px, h_px = _png_size(path)
+    return int(width_emu * h_px / w_px)
+
+
+def _set_table_indent(table, indent_emu: int) -> None:
+    """Задаёт левый отступ таблицы (w:tblInd) — так профиль отодвигается от края
+    страницы, когда поля секции равны нулю."""
+    tbl_pr = table._tbl.tblPr
+    ind = tbl_pr.find(qn("w:tblInd"))
+    if ind is None:
+        ind = tbl_pr.makeelement(qn("w:tblInd"), {})
+        tbl_pr.append(ind)
+    ind.set(qn("w:w"), str(int(indent_emu / 635)))  # EMU → twips (1 twip = 635 EMU)
+    ind.set(qn("w:type"), "dxa")
+
 
 
 # ─── Вшивание шрифтов Calleo внутрь .docx ─────────────────────────────────────
@@ -469,8 +533,12 @@ class DocxService:
         for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
             rfonts.set(qn(attr), FONT_NAME)
 
-    def _add_body(self, doc, text: str) -> None:
-        """Добавляет абзацы тела блока (разбивает по переносам строк)."""
+    def _add_body(self, doc, text: str, side_indent) -> None:
+        """Добавляет абзацы тела блока (разбивает по переносам строк).
+
+        side_indent — отступ слева/справа: поля страницы обнулены (чтобы
+        картинки были во всю ширину), поэтому текст отодвигаем от края вручную.
+        """
         text = (text or "").strip() or "—"
         # Абзацы разделяем по пустым строкам; одиночные \n оставляем как разрыв.
         chunks = [c.strip() for c in re.split(r"\n\s*\n", text) if c.strip()]
@@ -482,6 +550,8 @@ class DocxService:
             pf = p.paragraph_format
             pf.space_before = Pt(2)
             pf.space_after = Pt(6)
+            pf.left_indent = side_indent
+            pf.right_indent = side_indent
             lines = chunk.split("\n")
             for i, line in enumerate(lines):
                 run = p.add_run(line)
@@ -489,21 +559,41 @@ class DocxService:
                 if i < len(lines) - 1:
                     run.add_break()
 
-    def _add_fullwidth_image(self, doc, path: Path, content_width) -> None:
+    def _add_fullwidth_image(self, doc, path: Path, page_width,
+                             space_before: int = 6, space_after: int = 2) -> None:
+        """Вставляет изображение во ВСЮ ширину страницы (края в край).
+
+        Ширина = полная ширина страницы (поля секции обнулены), высота
+        подбирается автоматически с сохранением пропорций — перспектива не
+        ломается, т.к. задаём только width.
+        """
         if not path.exists():
             logger.warning("Asset missing: %s", path)
             return
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.paragraph_format.space_before = Pt(6)
-        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.space_before = Pt(space_before)
+        p.paragraph_format.space_after = Pt(space_after)
+        # Абзац-контейнер картинки тоже без отступов, иначе появится сдвиг вправо.
+        p.paragraph_format.left_indent = Emu(0)
+        p.paragraph_format.right_indent = Emu(0)
         run = p.add_run()
-        run.add_picture(str(path), width=content_width)
+        run.add_picture(str(path), width=page_width)
+
+    def _add_separator_line(self, doc, page_width) -> None:
+        """Тонкая горизонтальная линия-разделитель во всю ширину страницы."""
+        self._add_fullwidth_image(
+            doc, IMG_SEPARATOR_LINE, page_width, space_before=4, space_after=6
+        )
 
     def _add_profile(self, doc, shift_name: str, shift_dates: str,
                      dep_name: str, dep_color_hex: str, student_name: str,
-                     content_width) -> None:
-        """Профиль сотрудника: две колонки (метка / значение), без рамок."""
+                     content_width, side_indent) -> None:
+        """Профиль сотрудника: две колонки (метка / значение), без рамок.
+
+        content_width — ширина текстовой области (страница минус боковые
+        отступы), side_indent — левый отступ от края страницы (поля обнулены).
+        """
         rows = [
             ("Название смены", (shift_name or "—").upper(), DARK_HEX),
             ("Дата смены", (shift_dates or "—").upper(), DARK_HEX),
@@ -512,6 +602,7 @@ class DocxService:
         ]
         table = doc.add_table(rows=len(rows), cols=2)
         table.autofit = False
+        _set_table_indent(table, int(side_indent))
         label_w = Inches(2.0)
         value_w = content_width - label_w
         for r_idx, (label, value, color_hex) in enumerate(rows):
@@ -529,6 +620,35 @@ class DocxService:
             vp.alignment = WD_ALIGN_PARAGRAPH.LEFT
             vrun = vp.add_run(value)
             self._apply_font(vrun, SIZE_PROFILE, True, color_hex)
+
+    def _add_bottom_logo_footer(self, section, path: Path, page_width) -> None:
+        """Кладёт нижнее лого в футер СТРОГО у нижнего края страницы, во всю
+        ширину, без отступов.
+
+        Футер привязан к низу страницы; расстояние от нижнего края до футера
+        (footer_distance) обнуляем, а нижнее поле секции резервируем под высоту
+        лого — так картинка «садится» ровно в самый низ без полей.
+        """
+        if not path.exists():
+            logger.warning("Asset missing: %s", path)
+            return
+        logo_h = _rendered_height_emu(path, int(page_width))
+        section.footer_distance = Emu(0)
+        # Нижнее поле = высоте лого, чтобы текст тела не наезжал на футер.
+        section.bottom_margin = Emu(logo_h)
+
+        footer = section.footer
+        footer.is_linked_to_previous = False
+        p = footer.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        pf = p.paragraph_format
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(0)
+        pf.left_indent = Emu(0)
+        pf.right_indent = Emu(0)
+        run = p.add_run()
+        run.add_picture(str(path), width=page_width)
+
 
     # ── основной метод генерации ──────────────────────────────────────────────
     def generate(
@@ -556,14 +676,22 @@ class DocxService:
         section = doc.sections[0]
         section.page_width = Inches(8.27)     # A4 портрет
         section.page_height = Inches(11.69)
-        section.left_margin = Inches(0.6)
-        section.right_margin = Inches(0.6)
-        section.top_margin = Inches(0.5)
-        section.bottom_margin = Inches(0.5)
-        content_width = section.page_width - section.left_margin - section.right_margin
+        # Поля страницы обнулены по бокам и сверху: так лого и картинки-заголовки
+        # блоков занимают ВСЮ ширину страницы (края в край), а верхнее лого не
+        # имеет отступа от начала страницы. Нижнее поле выставит футер под лого.
+        section.left_margin = Emu(0)
+        section.right_margin = Emu(0)
+        section.top_margin = Emu(0)
+        section.bottom_margin = Emu(0)
+        # Полная ширина страницы — для изображений «во всю ширину».
+        page_width = section.page_width
+        # Боковой отступ для ТЕКСТА/профиля (картинки идут в край, текст — с полями).
+        side_indent = Inches(0.6)
 
-        # Лого сверху во всю ширину
-        self._add_fullwidth_image(doc, IMG_LOGO_TOP, content_width)
+        # Лого сверху — во всю ширину, строго в начале страницы (без отступа).
+        self._add_fullwidth_image(
+            doc, IMG_LOGO_TOP, page_width, space_before=0, space_after=4
+        )
 
         # Профиль сотрудника
         self._add_profile(
@@ -573,25 +701,30 @@ class DocxService:
             dep_name=dep_name,
             dep_color_hex=dep_color_hex,
             student_name=student.full_name or "",
-            content_width=content_width,
+            content_width=page_width - side_indent * 2,
+            side_indent=side_indent,
         )
 
+        # Разделительная линия между профилем и контентом (как было раньше).
+        self._add_separator_line(doc, page_width)
+
         # Блок 1. Легенда смены
-        self._add_fullwidth_image(doc, IMG_LEGEND_BLOCK, content_width)
-        self._add_body(doc, legend_text)
+        self._add_fullwidth_image(doc, IMG_LEGEND_BLOCK, page_width)
+        self._add_body(doc, legend_text, side_indent)
 
         # Блок 2. Преподский
-        self._add_fullwidth_image(doc, IMG_TEACHERS_BLOCK, content_width)
-        self._add_body(doc, teacher_block)
+        self._add_fullwidth_image(doc, IMG_TEACHERS_BLOCK, page_width)
+        self._add_body(doc, teacher_block, side_indent)
 
         # Блок 3. Вожатский
-        self._add_fullwidth_image(doc, IMG_TUTORS_BLOCK, content_width)
-        self._add_body(doc, tutor_block)
+        self._add_fullwidth_image(doc, IMG_TUTORS_BLOCK, page_width)
+        self._add_body(doc, tutor_block, side_indent)
 
-        # Лого снизу во всю ширину
-        self._add_fullwidth_image(doc, IMG_LOGO_BOTTOM, content_width)
+        # Лого снизу — во всю ширину, СТРОГО у нижнего края страницы (через футер).
+        self._add_bottom_logo_footer(section, IMG_LOGO_BOTTOM, page_width)
 
         output_path = self.reports_dir / safe_filename(student.full_name)
+
         doc.save(str(output_path))
         _embed_calleo_fonts_docx(output_path)
         logger.info("DOCX built: %s for student=%r", output_path, student.full_name)
