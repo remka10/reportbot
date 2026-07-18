@@ -37,9 +37,13 @@ from datetime import date
 from pathlib import Path
 
 from docx import Document
+from docx.enum.table import WD_ALIGN_VERTICAL
+
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Emu, Inches, Pt, RGBColor as DocxRGBColor
+
+
 
 
 # RGBColor из python-pptx нужен для _hex_to_rgb (его импортирует pptx_service).
@@ -58,8 +62,10 @@ IMG_LOGO_BOTTOM = ASSETS_DIR / "logo_bottom.png"
 IMG_LEGEND_BLOCK = ASSETS_DIR / "legend_block.png"
 IMG_TEACHERS_BLOCK = ASSETS_DIR / "teachers_block.png"
 IMG_TUTORS_BLOCK = ASSETS_DIR / "tutors_block.png"
-# Тонкая горизонтальная линия-разделитель (между профилем и остальным контентом).
-IMG_SEPARATOR_LINE = ASSETS_DIR / "separator_line.png"
+# Вертикальная линия-разделитель ВНУТРИ профиля (между колонкой меток
+# «Название смены / Дата смены / Департамент / ФИО» и колонкой значений).
+IMG_PROFILE_V_SEP = ASSETS_DIR / "profile_vertical_separator.png"
+
 
 
 FONT_REGULAR = ASSETS_DIR / "calleo-regular.otf"
@@ -580,16 +586,21 @@ class DocxService:
         run = p.add_run()
         run.add_picture(str(path), width=page_width)
 
-    def _add_separator_line(self, doc, page_width) -> None:
-        """Тонкая горизонтальная линия-разделитель во всю ширину страницы."""
-        self._add_fullwidth_image(
-            doc, IMG_SEPARATOR_LINE, page_width, space_before=4, space_after=6
-        )
-
     def _add_profile(self, doc, shift_name: str, shift_dates: str,
                      dep_name: str, dep_color_hex: str, student_name: str,
                      content_width, side_indent) -> None:
-        """Профиль сотрудника: две колонки (метка / значение), без рамок.
+        """Профиль сотрудника: три колонки (метка | вертикальный разделитель |
+        значение), без рамок.
+
+        Строки:
+            Название смены │ …
+            Дата смены     │ …
+            Департамент    │ …
+            ФИО            │ …
+
+        В средней узкой колонке в каждой строке стоит вертикальная линия-
+        разделитель profile_vertical_separator.png — она визуально делит метки
+        и значения на всю высоту профиля.
 
         content_width — ширина текстовой области (страница минус боковые
         отступы), side_indent — левый отступ от края страницы (поля обнулены).
@@ -600,54 +611,57 @@ class DocxService:
             ("Департамент", (dep_name or "—").upper(), dep_color_hex),
             ("ФИО", (student_name or "—").upper(), DARK_HEX),
         ]
-        table = doc.add_table(rows=len(rows), cols=2)
+        table = doc.add_table(rows=len(rows), cols=3)
         table.autofit = False
         _set_table_indent(table, int(side_indent))
-        label_w = Inches(2.0)
-        value_w = content_width - label_w
+
+        # Ширины колонок: метки | разделитель | значения.
+        sep_w = Inches(0.14)
+        label_w = Inches(1.9)
+        value_w = content_width - label_w - sep_w
+        col_widths = (label_w, sep_w, value_w)
+
+        # Высота строки разделителя (высота PNG при отрисовке на ширину sep_w).
+        sep_has = IMG_PROFILE_V_SEP.exists()
+        if not sep_has:
+            logger.warning("Asset missing: %s", IMG_PROFILE_V_SEP)
+
         for r_idx, (label, value, color_hex) in enumerate(rows):
             lc = table.cell(r_idx, 0)
-            vc = table.cell(r_idx, 1)
-            lc.width = label_w
-            vc.width = value_w
+            sc = table.cell(r_idx, 1)
+            vc = table.cell(r_idx, 2)
+            for cell, w in zip((lc, sc, vc), col_widths):
+                cell.width = w
+                cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
 
             lp = lc.paragraphs[0]
             lp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             lrun = lp.add_run(label)
             self._apply_font(lrun, SIZE_PROFILE_LABEL, False, GREY_HEX)
 
+            # Средняя колонка: вертикальная линия-разделитель.
+            sp = sc.paragraphs[0]
+            sp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            sp.paragraph_format.space_before = Pt(0)
+            sp.paragraph_format.space_after = Pt(0)
+            if sep_has:
+                srun = sp.add_run()
+                # Разделитель тянем по высоте строки; ширину не задаём, чтобы
+                # линия оставалась тонкой (высота ≈ высота строки профиля).
+                srun.add_picture(str(IMG_PROFILE_V_SEP), height=Pt(22))
+
             vp = vc.paragraphs[0]
             vp.alignment = WD_ALIGN_PARAGRAPH.LEFT
             vrun = vp.add_run(value)
             self._apply_font(vrun, SIZE_PROFILE, True, color_hex)
 
-    def _add_bottom_logo_footer(self, section, path: Path, page_width) -> None:
-        """Кладёт нижнее лого в футер СТРОГО у нижнего края страницы, во всю
-        ширину, без отступов.
+    def _add_bottom_logo(self, doc, page_width) -> None:
+        """Нижнее лого — во всю ширину страницы, без отступов, в конце тела
+        документа (на последней странице). НЕ колонтитул."""
+        self._add_fullwidth_image(
+            doc, IMG_LOGO_BOTTOM, page_width, space_before=6, space_after=0
+        )
 
-        Футер привязан к низу страницы; расстояние от нижнего края до футера
-        (footer_distance) обнуляем, а нижнее поле секции резервируем под высоту
-        лого — так картинка «садится» ровно в самый низ без полей.
-        """
-        if not path.exists():
-            logger.warning("Asset missing: %s", path)
-            return
-        logo_h = _rendered_height_emu(path, int(page_width))
-        section.footer_distance = Emu(0)
-        # Нижнее поле = высоте лого, чтобы текст тела не наезжал на футер.
-        section.bottom_margin = Emu(logo_h)
-
-        footer = section.footer
-        footer.is_linked_to_previous = False
-        p = footer.paragraphs[0]
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        pf = p.paragraph_format
-        pf.space_before = Pt(0)
-        pf.space_after = Pt(0)
-        pf.left_indent = Emu(0)
-        pf.right_indent = Emu(0)
-        run = p.add_run()
-        run.add_picture(str(path), width=page_width)
 
 
     # ── основной метод генерации ──────────────────────────────────────────────
@@ -705,10 +719,8 @@ class DocxService:
             side_indent=side_indent,
         )
 
-        # Разделительная линия между профилем и контентом (как было раньше).
-        self._add_separator_line(doc, page_width)
-
         # Блок 1. Легенда смены
+
         self._add_fullwidth_image(doc, IMG_LEGEND_BLOCK, page_width)
         self._add_body(doc, legend_text, side_indent)
 
@@ -720,8 +732,10 @@ class DocxService:
         self._add_fullwidth_image(doc, IMG_TUTORS_BLOCK, page_width)
         self._add_body(doc, tutor_block, side_indent)
 
-        # Лого снизу — во всю ширину, СТРОГО у нижнего края страницы (через футер).
-        self._add_bottom_logo_footer(section, IMG_LOGO_BOTTOM, page_width)
+        # Лого снизу — во всю ширину, без отступов, в конце тела документа
+        # (на последней странице). НЕ колонтитул.
+        self._add_bottom_logo(doc, page_width)
+
 
         output_path = self.reports_dir / safe_filename(student.full_name)
 
