@@ -141,8 +141,9 @@ def export_format_keyboard(scope: str, back_callback: str = "export:menu") -> In
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📄 PPTX", callback_data=f"export:{scope}_fmt:pptx"
+                    text="📄 Word (DOCX)", callback_data=f"export:{scope}_fmt:docx"
                 ),
+
                 InlineKeyboardButton(
                     text="📕 PDF", callback_data=f"export:{scope}_fmt:pdf"
                 ),

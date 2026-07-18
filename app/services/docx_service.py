@@ -1,23 +1,76 @@
+"""
+DOCX-сборщик отчёта «с нуля» (+ конвертация в PDF через LibreOffice).
+
+Логика (согласовано с заказчиком, 2026-07-19):
+
+Документ A4-портрет собирается программно из графических ассетов
+(папка app/templates/new_assets) и текста. Разделителей между блоками больше
+НЕТ — вместо них картинки-заголовки блоков во всю ширину страницы, а под каждой
+идёт текст:
+
+  • logo_top.png                — лого сверху во всю ширину
+  • Профиль сотрудника          — смена / даты / департамент (в цвет) / ФИО
+  • legend_block.png            → текст: контекст (легенда) смены
+  • teachers_block.png          → текст: «преподский» блок (LLM)
+  • tutors_block.png            → текст: «вожатский» блок (LLM)
+  • logo_bottom.png             — лого снизу во всю ширину
+
+Шрифты Calleo (calleo-regular.otf / calleo-semibold.otf) ВШИВАЮТСЯ внутрь .docx
+(обфусцированный формат odttf по правилам OOXML), чтобы гарнитура отображалась
+у того, кто открывает файл, даже без установки шрифта в системе.
+
+ВАЖНО: этот модуль также экспортирует набор хелперов
+(_hex_to_rgb, _resolve_shift_dates, get_department_color, get_department_name,
+parse_numbered_answers, safe_pptx_filename), которые импортирует legacy
+app/services/pptx_service.py — их сигнатуры НЕ меняем.
+"""
+from __future__ import annotations
+
+import asyncio
 import logging
+import os
 import re
+import shutil
+import subprocess
+import zipfile
 from datetime import date
 from pathlib import Path
-from typing import Union
 
-from docxtpl import DocxTemplate
-from pptx import Presentation
-from pptx.util import Pt
-from pptx.dml.color import RGBColor
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt, RGBColor as DocxRGBColor
+
+# RGBColor из python-pptx нужен для _hex_to_rgb (его импортирует pptx_service).
+from pptx.dml.color import RGBColor as PptxRGBColor
 
 from app.config import settings
-from app.database.models import Report, Student, Shift, User
 
 logger = logging.getLogger(__name__)
 
-# ─── Пути к шаблонам ──────────────────────────────────────────────────────────
+# ─── Пути к шаблонам / ассетам ────────────────────────────────────────────────
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
-DOCX_TEMPLATE_PATH = TEMPLATE_DIR / "report_template.docx"
-PPTX_TEMPLATE_PATH = TEMPLATE_DIR / "report_template.pptx"
+ASSETS_DIR = TEMPLATE_DIR / "new_assets"
+
+IMG_LOGO_TOP = ASSETS_DIR / "logo_top.png"
+IMG_LOGO_BOTTOM = ASSETS_DIR / "logo_bottom.png"
+IMG_LEGEND_BLOCK = ASSETS_DIR / "legend_block.png"
+IMG_TEACHERS_BLOCK = ASSETS_DIR / "teachers_block.png"
+IMG_TUTORS_BLOCK = ASSETS_DIR / "tutors_block.png"
+
+FONT_REGULAR = ASSETS_DIR / "calleo-regular.otf"
+FONT_SEMIBOLD = ASSETS_DIR / "calleo-semibold.otf"
+
+FONT_NAME = "Calleo"
+
+# ─── Размеры шрифта (pt) ──────────────────────────────────────────────────────
+SIZE_BODY = 11
+SIZE_PROFILE = 11
+SIZE_PROFILE_LABEL = 11
+
+# ─── Цвета ────────────────────────────────────────────────────────────────────
+DARK_HEX = "0F1115"
+GREY_HEX = "555555"
 
 # ─── Цвета департаментов (hex без #) ──────────────────────────────────────────
 # Официальные фирменные цвета департаментов (утверждено заказчиком).
@@ -59,7 +112,39 @@ def get_department_name(department_id: int) -> str:
     return DEPARTMENT_NAMES.get(department_id, f"Департамент {department_id}")
 
 
-# ─── Утилиты ──────────────────────────────────────────────────────────────────
+# ─── Маркеры блоков в тексте отчёта ───────────────────────────────────────────
+# LLM генерирует отчёт из двух блоков, разделяя их этими маркерами. Парсер ниже
+# восстанавливает по ним «преподский» и «вожатский» тексты для документа.
+TEACHER_MARKER = "=== ПРЕПОДСКИЙ БЛОК ==="
+TUTOR_MARKER = "=== ВОЖАТСКИЙ БЛОК ==="
+
+
+def split_two_blocks(text: str) -> tuple[str, str]:
+    """Разбивает текст отчёта на (преподский_блок, вожатский_блок).
+
+    Если маркеры не найдены — весь текст считаем преподским блоком, вожатский
+    остаётся пустым (устойчиво к отклонениям LLM).
+    """
+    if not text:
+        return "", ""
+    t_idx = text.find(TEACHER_MARKER)
+    v_idx = text.find(TUTOR_MARKER)
+
+    if t_idx != -1 and v_idx != -1:
+        teacher = text[t_idx + len(TEACHER_MARKER):v_idx].strip()
+        tutor = text[v_idx + len(TUTOR_MARKER):].strip()
+        return teacher, tutor
+    if v_idx != -1:
+        # Есть только вожатский маркер — до него преподский, после — вожатский.
+        teacher = text[:v_idx].replace(TEACHER_MARKER, "").strip()
+        tutor = text[v_idx + len(TUTOR_MARKER):].strip()
+        return teacher, tutor
+    if t_idx != -1:
+        return text[t_idx + len(TEACHER_MARKER):].strip(), ""
+    return text.strip(), ""
+
+
+# ─── Утилиты имён файлов / дат ────────────────────────────────────────────────
 
 def transliterate(text: str) -> str:
     table = {
@@ -84,7 +169,7 @@ def safe_filename(student_name: str) -> Path:
 
 
 def safe_pptx_filename(student_name: str) -> Path:
-    """report_IvanovIvan.pptx"""
+    """report_IvanovIvan.pptx (для legacy pptx_service)."""
     return Path(f"report_{transliterate(student_name)}.pptx")
 
 
@@ -93,41 +178,8 @@ def safe_archive_name(shift_name: str) -> str:
     return f"reports_{transliterate(shift_name)}_{date.today().strftime('%Y%m%d')}.zip"
 
 
-def parse_blocks(report_text: str) -> list[dict]:
-    """Парсит текст отчёта на блоки вида {block_title, content}."""
-    blocks = []
-    current_title = ""
-    current_lines: list[str] = []
-
-    for line in report_text.splitlines():
-        stripped = line.strip()
-        # Заголовок блока: «Блок N.» или «## ...»
-        block_match = re.match(r'^(?:#{1,3}\s*|Блок\s+\d+[\.\:]\s*)(.*)', stripped)
-        if block_match:
-            if current_lines:
-                blocks.append({
-                    "block_title": current_title or "",
-                    "content": "\n".join(current_lines).strip(),
-                })
-            current_title = block_match.group(1).strip()
-            current_lines = []
-        else:
-            if stripped:
-                current_lines.append(stripped)
-
-    if current_lines:
-        blocks.append({
-            "block_title": current_title or "",
-            "content": "\n".join(current_lines).strip(),
-        })
-
-    return blocks if blocks else [{"block_title": "", "content": report_text}]
-
-
-# ─── Jinja2-контекст (общий для DOCX и PPTX) ──────────────────────────────────
-
-def _resolve_shift_dates(shift: Shift) -> str:
-    """Пытается собрать строку с датами смены из доступных полей модели."""
+def _resolve_shift_dates(shift) -> str:
+    """Собирает строку с датами смены из доступных полей модели."""
     dates = getattr(shift, "dates", None)
     if dates:
         return str(dates)
@@ -143,70 +195,255 @@ def _resolve_shift_dates(shift: Shift) -> str:
     return ""
 
 
+def _strip_markdown_prefix(line: str) -> str:
+    """Убирает markdown-обёртки в начале строки (** , * , #, >, -, •, пробелы)."""
+    return re.sub(r"^[\s>#*•\-\u2013\u2014]+", "", line)
+
+
 def parse_numbered_answers(text: str) -> dict[int, str]:
     """
-    Fallback-парсер: вытаскивает пронумерованные ответы «1. …», «2) …»
-    из прозаического текста отчёта в словарь {номер: текст}.
-    Используется, если структурированные q_answers не переданы явно.
+    Fallback-парсер пронумерованных ответов «1. …», «2) …» из текста отчёта.
+    Оставлен для обратной совместимости (используется legacy pptx_service.py).
     """
     if not text:
         return {}
     answers: dict[int, str] = {}
     current_num: int | None = None
     buf: list[str] = []
-    num_re = re.compile(r"^\s*(\d{1,2})[\.\)]\s+(.*)")
-    # Разделитель, после которого идёт полный (прозаический) отчёт — его в
-    # пронумерованные ответы не тянем.
+    num_re = re.compile(r"^(\d{1,2})\s*[.):\-\u2013\u2014]\s*(.*)$")
+    num_only_re = re.compile(r"^(\d{1,2})\s*[.):\-\u2013\u2014]?\s*$")
     stop_re = re.compile(r"(итогов\w*\s+отч|={3,})", re.IGNORECASE)
-    for line in text.splitlines():
-        if stop_re.search(line):
+
+    def _flush() -> None:
+        if current_num is not None:
+            answers[current_num] = " ".join(buf).strip()
+
+    for raw_line in text.splitlines():
+        if stop_re.search(raw_line):
             break
+        line = _strip_markdown_prefix(raw_line).strip()
+        if not line:
+            continue
+        m_only = num_only_re.match(line)
+        if m_only:
+            _flush()
+            current_num = int(m_only.group(1))
+            buf = []
+            continue
         m = num_re.match(line)
-
         if m:
-            if current_num is not None:
-                answers[current_num] = " ".join(buf).strip()
+            _flush()
             current_num = int(m.group(1))
-            buf = [m.group(2).strip()]
-        elif current_num is not None and line.strip():
-            buf.append(line.strip())
-    if current_num is not None:
-        answers[current_num] = " ".join(buf).strip()
-    return answers
+            buf = [m.group(2).strip()] if m.group(2).strip() else []
+        elif current_num is not None:
+            buf.append(line)
+
+    _flush()
+    return {k: v for k, v in answers.items() if v}
 
 
-def _build_context(
-    report: Report,
-    student: Student,
-    shift: Shift,
-    teacher: User,
-    q_answers: dict[int, str] | None = None,
-    shift_context: str | None = None,
-) -> dict:
-    dep_id = shift.department_id or 0
-    # Источник ответов для q1..q13: явные структурированные ответы,
-    # иначе — пытаемся распарсить пронумерованные пункты из текста отчёта.
-    resolved_q = q_answers or parse_numbered_answers(report.generated_text or "")
-    return {
-        # Основные поля
-        "student_name":     student.full_name,
-        "shift_name":       shift.name,
-        "shift_dates":      _resolve_shift_dates(shift),
-        "department_name":  get_department_name(dep_id),
-        "department_id":    dep_id,
-        "department_color": get_department_color(dep_id),   # HEX без #, напр. "C0392B"
-        "teacher_name":     teacher.full_name,
-        "report_date":      date.today().strftime("%d.%m.%Y"),
-        "report_text":      report.generated_text,
-        "revision_count":   report.revision_count,
-        # Данные для PPTX-шаблона
-        "q_answers":        resolved_q,
-        "shift_context":    shift_context or "",
-        # Структурированные блоки для форматирования
-        "blocks": parse_blocks(report.generated_text or ""),
-    }
+# ─── Конвертация цветов ───────────────────────────────────────────────────────
+
+def _hex_to_rgb(hex_color: str) -> PptxRGBColor:
+    """'C0392B' → pptx RGBColor(192, 57, 43). Используется legacy pptx_service."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return PptxRGBColor(r, g, b)
 
 
+def _hex_to_docx_rgb(hex_color: str) -> DocxRGBColor:
+    """'C0392B' → docx RGBColor(192, 57, 43)."""
+    hex_color = hex_color.lstrip("#")
+    return DocxRGBColor(
+        int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    )
+
+
+# ─── Вшивание шрифтов Calleo внутрь .docx ─────────────────────────────────────
+# По правилам OOXML (ECMA-376 §17.8) встроенные шрифты Word хранятся в
+# обфусцированном виде (.odttf): первые 32 байта файла XOR-ятся с 16-байтным
+# ключом (GUID). GUID хранится в атрибуте w:fontKey внутри word/fontTable.xml.
+# Всё обёрнуто в try/except: при любой ошибке .docx остаётся валидным (просто без
+# встроенного шрифта).
+
+_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_CT = "http://schemas.openxmlformats.org/package/2006/content-types"
+_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+_FONT_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/font"
+_FONTTABLE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable"
+
+# Порядок дочерних элементов CT_Settings (нужен, чтобы Word не «чинил» файл).
+# Достаточно ранней части последовательности; неизвестным тегам присваиваем
+# большой индекс, чтобы embedTrueTypeFonts встал перед ними (они все позже).
+_SETTINGS_ORDER = {
+    "writeProtection": 0, "view": 1, "zoom": 2, "removePersonalInformation": 3,
+    "doNotDisplayPageBoundaries": 4, "displayBackgroundShape": 5,
+    "printPostScriptOverText": 6, "printFractionalCharacterWidth": 7,
+    "printFormsData": 8, "embedTrueTypeFonts": 9, "embedSystemFonts": 10,
+    "saveSubsetFonts": 11, "saveFormsData": 12, "mirrorMargins": 13,
+    "alignBordersAndEdges": 14, "bordersDoNotSurroundHeader": 15,
+    "bordersDoNotSurroundFooter": 16, "gutterAtTop": 17, "hideSpellingErrors": 18,
+    "hideGrammaticalErrors": 19, "defaultTabStop": 33,
+    "characterSpacingControl": 40, "compat": 50, "rsids": 51,
+}
+
+
+def _make_font_key() -> tuple[str, bytes]:
+    """Возвращает (w:fontKey-строка «{GUID}», 16-байтный ключ для XOR).
+
+    Строка формируется так, чтобы Word, распарсив GUID и вызвав внутреннее
+    Guid.ToByteArray() (mixed-endian), получил ровно те же 16 байт, которыми мы
+    обфусцируем шрифт.
+    """
+    kb = os.urandom(16)
+    guid = (
+        "{%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X}"
+        % (
+            kb[3], kb[2], kb[1], kb[0],
+            kb[5], kb[4],
+            kb[7], kb[6],
+            kb[8], kb[9],
+            kb[10], kb[11], kb[12], kb[13], kb[14], kb[15],
+        )
+    )
+    return guid, kb
+
+
+def _obfuscate_font(font_bytes: bytes, kb: bytes) -> bytes:
+    """XOR-обфускация первых 32 байт шрифта ключом kb (по OOXML)."""
+    data = bytearray(font_bytes)
+    limit = min(32, len(data))
+    for i in range(limit):
+        data[i] ^= kb[i % 16]
+    return bytes(data)
+
+
+def _next_rid(existing: set) -> str:
+    i = 1
+    while f"rId{i}" in existing:
+        i += 1
+    return f"rId{i}"
+
+
+def _insert_settings_ordered(settings_root, new_el, ns: str) -> None:
+    """Вставляет new_el в settings.xml, сохраняя порядок схемы CT_Settings."""
+    tag = new_el.tag.split("}")[-1]
+    new_idx = _SETTINGS_ORDER.get(tag, 999)
+    for child in settings_root:
+        child_tag = child.tag.split("}")[-1]
+        child_idx = _SETTINGS_ORDER.get(child_tag, 999)
+        if child_idx > new_idx:
+            child.addprevious(new_el)
+            return
+    settings_root.append(new_el)
+
+
+def _embed_calleo_fonts_docx(docx_path: Path) -> None:
+    """Встраивает шрифты Calleo (regular + semibold) в .docx как odttf."""
+    if not FONT_REGULAR.exists():
+        logger.warning("Font asset missing, skip embed: %s", FONT_REGULAR)
+        return
+    try:
+        from lxml import etree
+
+        with zipfile.ZipFile(docx_path, "r") as zin:
+            data = {n: zin.read(n) for n in zin.namelist()}
+
+        # --- 1. Обфусцированные данные шрифтов ---
+        reg_guid, reg_kb = _make_font_key()
+        bold_guid, bold_kb = _make_font_key()
+        semi_src = FONT_SEMIBOLD if FONT_SEMIBOLD.exists() else FONT_REGULAR
+        data["word/fonts/font1.odttf"] = _obfuscate_font(FONT_REGULAR.read_bytes(), reg_kb)
+        data["word/fonts/font2.odttf"] = _obfuscate_font(semi_src.read_bytes(), bold_kb)
+
+        # --- 2. word/fontTable.xml ---
+        fonts_el = etree.Element(f"{{{_W}}}fonts", nsmap={"w": _W, "r": _R})
+        font_el = etree.SubElement(fonts_el, f"{{{_W}}}font")
+        font_el.set(f"{{{_W}}}name", FONT_NAME)
+        er = etree.SubElement(font_el, f"{{{_W}}}embedRegular")
+        er.set(f"{{{_R}}}id", "rIdFontReg")
+        er.set(f"{{{_W}}}fontKey", reg_guid)
+        eb = etree.SubElement(font_el, f"{{{_W}}}embedBold")
+        eb.set(f"{{{_R}}}id", "rIdFontBold")
+        eb.set(f"{{{_W}}}fontKey", bold_guid)
+        data["word/fontTable.xml"] = etree.tostring(
+            fonts_el, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+
+        # --- 3. word/_rels/fontTable.xml.rels ---
+        rels_root = etree.Element(f"{{{_REL}}}Relationships")
+        for rid, target in (
+            ("rIdFontReg", "fonts/font1.odttf"),
+            ("rIdFontBold", "fonts/font2.odttf"),
+        ):
+            rel = etree.SubElement(rels_root, f"{{{_REL}}}Relationship")
+            rel.set("Id", rid)
+            rel.set("Type", _FONT_REL_TYPE)
+            rel.set("Target", target)
+        data["word/_rels/fontTable.xml.rels"] = etree.tostring(
+            rels_root, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+
+        # --- 4. word/_rels/document.xml.rels: связь на fontTable.xml ---
+        doc_rels_name = "word/_rels/document.xml.rels"
+        doc_rels = etree.fromstring(data[doc_rels_name])
+        has_fonttable = any(
+            r.get("Type") == _FONTTABLE_REL_TYPE for r in doc_rels
+        )
+        if not has_fonttable:
+            existing_ids = {r.get("Id") for r in doc_rels}
+            rel = etree.SubElement(doc_rels, f"{{{_REL}}}Relationship")
+            rel.set("Id", _next_rid(existing_ids))
+            rel.set("Type", _FONTTABLE_REL_TYPE)
+            rel.set("Target", "fontTable.xml")
+            data[doc_rels_name] = etree.tostring(
+                doc_rels, xml_declaration=True, encoding="UTF-8", standalone=True
+            )
+
+        # --- 5. word/settings.xml: <w:embedTrueTypeFonts/> ---
+        settings_name = "word/settings.xml"
+        settings_root = etree.fromstring(data[settings_name])
+        if settings_root.find(f"{{{_W}}}embedTrueTypeFonts") is None:
+            ett = etree.Element(f"{{{_W}}}embedTrueTypeFonts")
+            _insert_settings_ordered(settings_root, ett, _W)
+            data[settings_name] = etree.tostring(
+                settings_root, xml_declaration=True, encoding="UTF-8", standalone=True
+            )
+
+        # --- 6. [Content_Types].xml: Default odttf + Override fontTable ---
+        ct_name = "[Content_Types].xml"
+        ct_root = etree.fromstring(data[ct_name])
+        if not any(
+            d.get("Extension") == "odttf" for d in ct_root.findall(f"{{{_CT}}}Default")
+        ):
+            d = etree.SubElement(ct_root, f"{{{_CT}}}Default")
+            d.set("Extension", "odttf")
+            d.set("ContentType", "application/vnd.openxmlformats-officedocument.obfuscatedFont")
+        if not any(
+            o.get("PartName") == "/word/fontTable.xml"
+            for o in ct_root.findall(f"{{{_CT}}}Override")
+        ):
+            o = etree.SubElement(ct_root, f"{{{_CT}}}Override")
+            o.set("PartName", "/word/fontTable.xml")
+            o.set(
+                "ContentType",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml",
+            )
+        data[ct_name] = etree.tostring(
+            ct_root, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+
+        # --- 7. Перезаписываем zip ---
+        tmp_path = docx_path.with_suffix(".tmp.docx")
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zout:
+            for name, payload in data.items():
+                zout.writestr(name, payload)
+        shutil.move(str(tmp_path), str(docx_path))
+        logger.info("Calleo fonts embedded into %s", docx_path.name)
+
+    except Exception as e:  # noqa: BLE001 — не роняем экспорт из-за встраивания
+        logger.warning("DOCX font embedding skipped (%s): %s", docx_path.name, e)
 
 
 # ─── DOCX ─────────────────────────────────────────────────────────────────────
@@ -216,404 +453,213 @@ class DocxService:
         self.reports_dir = Path(settings.reports_dir)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
-    def _get_template(self) -> DocxTemplate:
-        if not DOCX_TEMPLATE_PATH.exists():
-            raise FileNotFoundError(
-                f"DOCX-шаблон не найден: {DOCX_TEMPLATE_PATH}. "
-                "Положите report_template.docx в app/templates/"
-            )
-        return DocxTemplate(str(DOCX_TEMPLATE_PATH))
-
-    def generate(
-        self,
-        report: Report,
-        student: Student,
-        shift: Shift,
-        teacher: User,
-        q_answers: dict[int, str] | None = None,
-        shift_context: str | None = None,
-    ) -> Path:
-        """Генерирует DOCX и возвращает Path к файлу."""
-        tpl = self._get_template()
-        context = _build_context(
-            report, student, shift, teacher, q_answers, shift_context
-        )
-
-        tpl.render(context)
-        output_path = self.reports_dir / safe_filename(student.full_name)
-        tpl.save(str(output_path))
-        logger.info(f"DOCX generated: {output_path} for student={student.full_name!r}")
-        return output_path
-
-
-# ─── PPTX ─────────────────────────────────────────────────────────────────────
-#
-# Реальный шаблон report_template.pptx устроен так:
-#   • Ответы вставляются по-вопросно: {{ q1_answer }} … {{ q13_answer }}.
-#   • Шапка профиля: {{ shift_name }}, {{ shift_dates }}, {{ department_name }},
-#     {{ student_name }}.
-#   • Разделители между блоками — это СГРУППИРОВАННЫЕ фигуры (пунктирная линия
-#     + 2 SVG-уголка), стоящие на фиксированных координатах.
-#
-# Проблема: текстовые блоки имеют auto-fit и растут вниз при длинном тексте,
-# а разделители стоят на месте → длинный ответ «наезжает» на разделитель.
-#
-# Решение (Вариант A — поток с ре-флоу):
-#   1. Заполняем плейсхолдеры (устойчиво к тому, что PowerPoint дробит
-#      {{ q4_answer }} на несколько run-ов).
-#   2. Оцениваем реальную высоту каждого текстового фрейма после вставки.
-#   3. Проходим фигуры слайда сверху вниз и СДВИГАЕМ вниз всё, что ниже
-#      выросшего блока (в т.ч. группы-разделители), на величину прироста.
-#   4. Высоту слайда увеличиваем, чтобы контент никогда не обрезался.
-# Итог: разделитель всегда идёт сразу после своего блока, при любой длине
-# текста, а вёрстка не «разваливается».
-
-from pptx.util import Emu
-
-EMU_PER_PT = 12700
-
-# Регекс-шаблоны плейсхолдеров (учитывают произвольные пробелы внутри {{ }})
-_PLACEHOLDER_KEYS = [
-    "student_name", "shift_name", "shift_dates", "department_name",
-    *[f"q{i}_answer" for i in range(1, 14)],
-]
-
-# Плейсхолдеры, чей текст красится в цвет департамента
-_COLORED_KEYS = {"department_name"}
-
-# Совместимость: тег для явной покраски произвольного фрейма
-PPTX_COLOR_TAG = "{{department_color}}"
-
-
-def _hex_to_rgb(hex_color: str) -> RGBColor:
-    """'C0392B' → RGBColor(192, 57, 43)"""
-    hex_color = hex_color.lstrip("#")
-    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
-    return RGBColor(r, g, b)
-
-
-def _build_pptx_values(context: dict) -> dict[str, str]:
-    """Готовит словарь key → строковое значение для плейсхолдеров шаблона."""
-    values: dict[str, str] = {
-        "student_name":    str(context.get("student_name", "")),
-        "shift_name":      str(context.get("shift_name", "")),
-        "shift_dates":     str(context.get("shift_dates", "")),
-        "department_name": str(context.get("department_name", "")),
-    }
-    q_answers: dict[str, str] = context.get("q_answers", {}) or {}
-    for i in range(1, 14):
-        values[f"q{i}_answer"] = str(q_answers.get(i, q_answers.get(str(i), "")))
-    return values
-
-
-def _fill_paragraph(para, values: dict[str, str], rgb: RGBColor | None) -> bool:
-    """
-    Заменяет плейсхолдеры в параграфе, склеивая разбитые PowerPoint-ом run-ы.
-    Возвращает True, если в параграфе был найден плейсхолдер.
-    Если плейсхолдер из _COLORED_KEYS — красит текст в цвет департамента.
-    """
-    runs = para.runs
-    if not runs:
-        return False
-
-    full_text = "".join(run.text for run in runs)
-    if "{{" not in full_text:
-        return False
-
-    new_text = full_text
-    found_colored = False
-    for key in _PLACEHOLDER_KEYS:
-        pattern = re.compile(r"\{\{\s*" + re.escape(key) + r"\s*\}\}")
-        if pattern.search(new_text):
-            new_text = pattern.sub(lambda _m: values.get(key, ""), new_text)
-            if key in _COLORED_KEYS:
-                found_colored = True
-
-    if new_text == full_text:
-        return False
-
-    # Пишем результат в первый run, остальные очищаем (сохраняем формат первого)
-    runs[0].text = new_text
-    for run in runs[1:]:
-        run.text = ""
-
-    if found_colored and rgb is not None:
-        runs[0].font.color.rgb = rgb
-
-    return True
-
-
-def _fill_shape_text(shape, values: dict[str, str], rgb: RGBColor | None) -> bool:
-    """Заполняет плейсхолдеры во фрейме. Возвращает True, если что-то заменено."""
-    if not shape.has_text_frame:
-        return False
-    changed = False
-    for para in shape.text_frame.paragraphs:
-        if _fill_paragraph(para, values, rgb):
-            changed = True
-    return changed
-
-
-def _para_font_pt(para) -> float:
-    """Определяет размер шрифта параграфа в пунктах (с запасным значением)."""
-    for run in para.runs:
-        if run.font.size is not None:
-            return run.font.size.pt
-    if para.font.size is not None:
-        return para.font.size.pt
-    return 10.0
-
-
-def _estimate_textframe_height(shape) -> int:
-    """
-    Оценивает необходимую высоту текстового фрейма (в EMU) под текущий текст.
-    Оценка приблизительная, но нам важен только ПРИРОСТ высоты, поэтому
-    мы всегда только увеличиваем высоту и сдвигаем нижние фигуры.
-    """
-    tf = shape.text_frame
-    width_emu = shape.width or 0
-    if width_emu <= 0:
-        return shape.height or 0
-    width_pt = width_emu / EMU_PER_PT
-
-    total_lines = 0.0
-    max_font_pt = 10.0
-    for para in tf.paragraphs:
-        font_pt = _para_font_pt(para)
-        max_font_pt = max(max_font_pt, font_pt)
-        text = para.text or ""
-        # Средняя ширина символа кириллицы ~0.55 от кегля
-        char_pt = font_pt * 0.55
-        chars_per_line = max(1, int(width_pt / char_pt))
-        # Учитываем явные переносы строк внутри параграфа
-        line_segments = text.split("\n") if text else [""]
-        para_lines = 0
-        for seg in line_segments:
-            seg_len = len(seg)
-            para_lines += max(1, -(-seg_len // chars_per_line))  # ceil-деление
-        total_lines += para_lines
-
-    # Высота строки ~1.3 кегля + межпараграфные отступы + внутр. поля фрейма
-    line_h_pt = max_font_pt * 1.3
-    text_h_pt = total_lines * line_h_pt
-    para_gap_pt = 6.0 * len(tf.paragraphs)
-    padding_pt = 8.0
-    est_pt = text_h_pt + para_gap_pt + padding_pt
-    return int(est_pt * EMU_PER_PT)
-
-
-def _reflow_slide(slide, grown_extra: dict[int, int], slide_height: int) -> int:
-    """
-    Сдвигает фигуры вниз так, чтобы разделители всегда шли ПОСЛЕ своих блоков.
-    grown_extra: {id(shape): прирост_высоты_в_EMU} для выросших текстовых боксов.
-    Возвращает требуемую высоту слайда (EMU), чтобы ничего не обрезалось.
-    """
-    # Собираем фигуры верхнего уровня с валидной позицией
-    shapes = [s for s in slide.shapes if s.top is not None and s.height is not None]
-    shapes.sort(key=lambda s: s.top)
-
-    cumulative = 0  # накопленный сдвиг вниз
-    max_bottom = slide_height
-    for shape in shapes:
-        if cumulative:
-            shape.top = shape.top + cumulative
-        extra = grown_extra.get(id(shape), 0)
-        bottom = shape.top + (shape.height or 0) + extra
-        if bottom > max_bottom:
-            max_bottom = bottom
-        # После этой фигуры всё нижеследующее опускается на её прирост
-        cumulative += extra
-
-    return max_bottom + Emu(int(0.3 * 914400))  # +0.3" нижнего поля
-
-
-def _insert_legend_block(slide, title: str, body_text: str,
-                         rgb: RGBColor) -> int:
-    """
-    Вставляет блок «ЛЕГЕНДА СМЕНЫ» после профиля сотрудника (шапки).
-    Возвращает суммарную высоту вставленного блока (EMU) — на неё нужно
-    опустить всё, что расположено ниже точки вставки.
-    Реализовано через клонирование ближайшего блока-заголовка и разделителя,
-    что сохраняет фирменное оформление шаблона.
-    """
-    import copy
-    from pptx.oxml.ns import qn
-
-    # Находим якорь — текстовый бокс профиля («ПРОФИЛЬ СОТРУДНИКА …»)
-    anchor = None
-    for shape in slide.shapes:
-        if shape.has_text_frame and "ПРОФИЛЬ СОТРУДНИКА" in shape.text_frame.text:
-            anchor = shape
-            break
-    if anchor is None:
-        return 0
-
-    left = anchor.left
-    width = anchor.width
-    # Точка вставки — ниже блока «шапки» профиля.
-    # Берём максимум низа среди верхних фигур профиля (шапка + инфо-группа).
-    profile_bottom = anchor.top + (anchor.height or 0)
-    for shape in slide.shapes:
-        if shape is anchor:
-            continue
-        if shape.top is not None and shape.top < anchor.top + Emu(int(1.6 * 914400)):
-            b = shape.top + (shape.height or 0)
-            if b > profile_bottom:
-                profile_bottom = b
-
-    gap = Emu(int(0.12 * 914400))
-    cur_y = profile_bottom + gap
-
-    # --- Заголовок «ЛЕГЕНДА СМЕНЫ» ---
-    title_box = slide.shapes.add_textbox(left, cur_y, width, Pt(24))
-    tf = title_box.text_frame
-    tf.word_wrap = True
-    p = tf.paragraphs[0]
-    run = p.add_run()
-    run.text = title
-    run.font.bold = True
-    run.font.size = Pt(14)
-    run.font.color.rgb = rgb
-    title_h = _estimate_textframe_height(title_box)
-    title_box.height = title_h
-    cur_y = cur_y + title_h + gap
-
-    # --- Тело легенды (контекст смены) ---
-    body_box = slide.shapes.add_textbox(left, cur_y, width, Pt(24))
-    bf = body_box.text_frame
-    bf.word_wrap = True
-    bp = bf.paragraphs[0]
-    brun = bp.add_run()
-    brun.text = body_text or "Контекст смены не указан."
-    brun.font.size = Pt(10)
-    brun.font.color.rgb = _hex_to_rgb("0F1115")
-    body_h = _estimate_textframe_height(body_box)
-    body_box.height = body_h
-    cur_y = cur_y + body_h + gap
-
-    # --- Разделитель: клонируем ближайшую группу-разделитель ---
-    sep_height = 0
-    sep_group_xml = None
-    for shape in slide.shapes:
-        # Разделитель — это группа, содержащая пунктирную линию (cxnSp)
-        el = shape._element
-        if el.tag == qn("p:grpSp") and el.find(".//" + qn("p:cxnSp")) is not None:
-            sep_group_xml = copy.deepcopy(el)
-            sep_height = shape.height or 0
-            break
-
-    if sep_group_xml is not None:
-        # Переносим клон в дерево фигур и ставим его под телом легенды
-        spTree = slide.shapes._spTree
-        spTree.append(sep_group_xml)
-        grp_xfrm = sep_group_xml.find(qn("p:grpSpPr") + "/" + qn("a:xfrm"))
-        if grp_xfrm is not None:
-            off = grp_xfrm.find(qn("a:off"))
-            if off is not None:
-                off.set("y", str(int(cur_y)))
-        cur_y = cur_y + sep_height + gap
-
-    return int(cur_y - profile_bottom)
-
-
-class PptxService:
-    def __init__(self) -> None:
-        self.reports_dir = Path(settings.reports_dir)
-        self.reports_dir.mkdir(parents=True, exist_ok=True)
-
-    def _get_template(self) -> Presentation:
-        if not PPTX_TEMPLATE_PATH.exists():
-            raise FileNotFoundError(
-                f"PPTX-шаблон не найден: {PPTX_TEMPLATE_PATH}. "
-                "Положите report_template.pptx в app/templates/"
-            )
-        return Presentation(str(PPTX_TEMPLATE_PATH))
-
-    def generate(
-        self,
-        report: Report,
-        student: Student,
-        shift: Shift,
-        teacher: User,
-        q_answers: dict[int, str] | None = None,
-        shift_context: str | None = None,
-    ) -> Path:
-        """Генерирует PPTX из шаблона и возвращает Path к файлу."""
-        prs = self._get_template()
-        context = _build_context(
-            report, student, shift, teacher, q_answers, shift_context
-        )
-        rgb = _hex_to_rgb(context["department_color"])
-        values = _build_pptx_values(context)
-        slide_height = prs.slide_height
-
-        for idx, slide in enumerate(prs.slides):
-            # 1) Легенда смены — сразу после профиля (только на 1-м слайде)
-            legend_added = 0
-            if idx == 0:
-                legend_added = _insert_legend_block(
-                    slide,
-                    title="ЛЕГЕНДА СМЕНЫ",
-                    body_text=context.get("shift_context") or "",
-                    rgb=rgb,
-                )
-
-
-            # 2) Заполняем плейсхолдеры и запоминаем прирост высоты боксов
-            grown_extra: dict[int, int] = {}
-            for shape in slide.shapes:
-                if not shape.has_text_frame:
-                    continue
-                # Явная покраска фрейма тегом (обратная совместимость)
-                if PPTX_COLOR_TAG in shape.text_frame.text:
-                    for para in shape.text_frame.paragraphs:
-                        for run in para.runs:
-                            run.text = run.text.replace(PPTX_COLOR_TAG, "")
-                            run.font.color.rgb = rgb
-
-                before_h = shape.height or 0
-                if _fill_shape_text(shape, values, rgb):
-                    needed = _estimate_textframe_height(shape)
-                    if needed > before_h:
-                        grown_extra[id(shape)] = needed - before_h
-
-            # 3) Если вставили легенду — двигаем весь контент профиля ниже точки
-            #    вставки (кроме самих новых фигур легенды, что уже на месте).
-            #    Реализуется тем же ре-флоу: помечаем «нижние» фигуры приростом 0,
-            #    а сдвиг обеспечиваем через отдельный проход.
-            if legend_added:
-                self._shift_below(slide, legend_added, context)
-
-            # 4) Ре-флоу: разделители всегда идут после своих блоков,
-            #    слайд растёт, чтобы ничего не обрезалось.
-            required_h = _reflow_slide(slide, grown_extra, slide_height)
-            if required_h > slide_height:
-                slide_height = required_h
-
-        # Единая высота слайда для всей презентации
-        if slide_height > prs.slide_height:
-            prs.slide_height = slide_height
-
-        output_path = self.reports_dir / safe_pptx_filename(student.full_name)
-        prs.save(str(output_path))
-        logger.info(f"PPTX generated: {output_path} for student={student.full_name!r}")
-        return output_path
-
+    # ── низкоуровневые помощники вёрстки ──────────────────────────────────────
     @staticmethod
-    def _shift_below(slide, delta: int, context: dict) -> None:
-        """
-        Опускает вниз на delta все фигуры, которые находятся ниже блока профиля,
-        освобождая место под вставленную «Легенду смены».
-        Ориентир — верх текстового бокса «ИГРОВАЯ РОЛЬ».
-        """
-        anchor_top = None
-        for shape in slide.shapes:
-            if shape.has_text_frame and "ИГРОВАЯ РОЛЬ" in shape.text_frame.text:
-                anchor_top = shape.top
-                break
-        if anchor_top is None:
-            return
-        for shape in slide.shapes:
-            if shape.top is not None and shape.top >= anchor_top:
-                shape.top = shape.top + delta
+    def _apply_font(run, size: int, bold: bool, color_hex: str) -> None:
+        run.font.name = FONT_NAME
+        run.font.size = Pt(size)
+        run.font.bold = bold
+        run.font.color.rgb = _hex_to_docx_rgb(color_hex)
+        # Явно проставляем гарнитуру для всех диапазонов (в т.ч. кириллицы).
+        rpr = run._element.get_or_add_rPr()
+        rfonts = rpr.find(qn("w:rFonts"))
+        if rfonts is None:
+            rfonts = rpr.makeelement(qn("w:rFonts"), {})
+            rpr.insert(0, rfonts)
+        for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+            rfonts.set(qn(attr), FONT_NAME)
 
+    def _add_body(self, doc, text: str) -> None:
+        """Добавляет абзацы тела блока (разбивает по переносам строк)."""
+        text = (text or "").strip() or "—"
+        # Абзацы разделяем по пустым строкам; одиночные \n оставляем как разрыв.
+        chunks = [c.strip() for c in re.split(r"\n\s*\n", text) if c.strip()]
+        if not chunks:
+            chunks = [text]
+        for chunk in chunks:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            pf = p.paragraph_format
+            pf.space_before = Pt(2)
+            pf.space_after = Pt(6)
+            lines = chunk.split("\n")
+            for i, line in enumerate(lines):
+                run = p.add_run(line)
+                self._apply_font(run, SIZE_BODY, False, DARK_HEX)
+                if i < len(lines) - 1:
+                    run.add_break()
+
+    def _add_fullwidth_image(self, doc, path: Path, content_width) -> None:
+        if not path.exists():
+            logger.warning("Asset missing: %s", path)
+            return
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.space_before = Pt(6)
+        p.paragraph_format.space_after = Pt(2)
+        run = p.add_run()
+        run.add_picture(str(path), width=content_width)
+
+    def _add_profile(self, doc, shift_name: str, shift_dates: str,
+                     dep_name: str, dep_color_hex: str, student_name: str,
+                     content_width) -> None:
+        """Профиль сотрудника: две колонки (метка / значение), без рамок."""
+        rows = [
+            ("Название смены", (shift_name or "—").upper(), DARK_HEX),
+            ("Дата смены", (shift_dates or "—").upper(), DARK_HEX),
+            ("Департамент", (dep_name or "—").upper(), dep_color_hex),
+            ("ФИО", (student_name or "—").upper(), DARK_HEX),
+        ]
+        table = doc.add_table(rows=len(rows), cols=2)
+        table.autofit = False
+        label_w = Inches(2.0)
+        value_w = content_width - label_w
+        for r_idx, (label, value, color_hex) in enumerate(rows):
+            lc = table.cell(r_idx, 0)
+            vc = table.cell(r_idx, 1)
+            lc.width = label_w
+            vc.width = value_w
+
+            lp = lc.paragraphs[0]
+            lp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            lrun = lp.add_run(label)
+            self._apply_font(lrun, SIZE_PROFILE_LABEL, False, GREY_HEX)
+
+            vp = vc.paragraphs[0]
+            vp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            vrun = vp.add_run(value)
+            self._apply_font(vrun, SIZE_PROFILE, True, color_hex)
+
+    # ── основной метод генерации ──────────────────────────────────────────────
+    def generate(
+        self,
+        report,
+        student,
+        shift,
+        teacher,
+        q_answers: dict[int, str] | None = None,
+        shift_context: str | None = None,
+    ) -> Path:
+        """Собирает DOCX и возвращает путь к файлу."""
+        # Департамент берётся из РЕБЁНКА (student.department_number проставляется
+        # в хендлере), фолбэк — на смену.
+        dep_number = getattr(student, "department_number", None)
+        if dep_number is None:
+            dep_number = getattr(shift, "department_id", None) or 0
+        dep_color_hex = get_department_color(dep_number)
+        dep_name = get_department_name(dep_number)
+
+        teacher_block, tutor_block = split_two_blocks(report.generated_text or "")
+        legend_text = (shift_context or "").strip() or "Контекст смены не указан."
+
+        doc = Document()
+        section = doc.sections[0]
+        section.page_width = Inches(8.27)     # A4 портрет
+        section.page_height = Inches(11.69)
+        section.left_margin = Inches(0.6)
+        section.right_margin = Inches(0.6)
+        section.top_margin = Inches(0.5)
+        section.bottom_margin = Inches(0.5)
+        content_width = section.page_width - section.left_margin - section.right_margin
+
+        # Лого сверху во всю ширину
+        self._add_fullwidth_image(doc, IMG_LOGO_TOP, content_width)
+
+        # Профиль сотрудника
+        self._add_profile(
+            doc,
+            shift_name=shift.name or "",
+            shift_dates=_resolve_shift_dates(shift),
+            dep_name=dep_name,
+            dep_color_hex=dep_color_hex,
+            student_name=student.full_name or "",
+            content_width=content_width,
+        )
+
+        # Блок 1. Легенда смены
+        self._add_fullwidth_image(doc, IMG_LEGEND_BLOCK, content_width)
+        self._add_body(doc, legend_text)
+
+        # Блок 2. Преподский
+        self._add_fullwidth_image(doc, IMG_TEACHERS_BLOCK, content_width)
+        self._add_body(doc, teacher_block)
+
+        # Блок 3. Вожатский
+        self._add_fullwidth_image(doc, IMG_TUTORS_BLOCK, content_width)
+        self._add_body(doc, tutor_block)
+
+        # Лого снизу во всю ширину
+        self._add_fullwidth_image(doc, IMG_LOGO_BOTTOM, content_width)
+
+        output_path = self.reports_dir / safe_filename(student.full_name)
+        doc.save(str(output_path))
+        _embed_calleo_fonts_docx(output_path)
+        logger.info("DOCX built: %s for student=%r", output_path, student.full_name)
+        return output_path
+
+    # ── конвертация в PDF (через LibreOffice/soffice) ─────────────────────────
+    def _to_pdf(self, docx_path: Path) -> Path:
+        """Конвертирует .docx → .pdf через headless LibreOffice."""
+        outdir = docx_path.parent
+        subprocess.run(
+            [
+                "soffice", "--headless", "--nologo", "--nofirststartwizard",
+                "--convert-to", "pdf", "--outdir", str(outdir), str(docx_path),
+            ],
+            check=True,
+            timeout=180,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        pdf_path = docx_path.with_suffix(".pdf")
+        if not pdf_path.exists():
+            raise RuntimeError(f"PDF не создан: {pdf_path}")
+        logger.info("PDF built: %s", pdf_path.name)
+        return pdf_path
+
+    def generate_pdf(
+        self,
+        report,
+        student,
+        shift,
+        teacher,
+        q_answers: dict[int, str] | None = None,
+        shift_context: str | None = None,
+    ) -> Path:
+        """Собирает DOCX и конвертирует его в PDF, возвращает путь к PDF."""
+        docx_path = self.generate(
+            report=report, student=student, shift=shift, teacher=teacher,
+            q_answers=q_answers, shift_context=shift_context,
+        )
+        return self._to_pdf(docx_path)
+
+    # ── асинхронные обёртки (тяжёлая работа — в отдельном потоке) ──────────────
+    async def generate_async(
+        self,
+        report,
+        student,
+        shift,
+        teacher,
+        q_answers: dict[int, str] | None = None,
+        shift_context: str | None = None,
+    ) -> Path:
+        return await asyncio.to_thread(
+            self.generate,
+            report=report, student=student, shift=shift, teacher=teacher,
+            q_answers=q_answers, shift_context=shift_context,
+        )
+
+    async def generate_pdf_async(
+        self,
+        report,
+        student,
+        shift,
+        teacher,
+        q_answers: dict[int, str] | None = None,
+        shift_context: str | None = None,
+    ) -> Path:
+        return await asyncio.to_thread(
+            self.generate_pdf,
+            report=report, student=student, shift=shift, teacher=teacher,
+            q_answers=q_answers, shift_context=shift_context,
+        )

@@ -242,9 +242,10 @@ def finalized_report_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="📄 Скачать PPTX",
+                    text="📄 Скачать Word",
                     callback_data="export:single",
                 ),
+
                 InlineKeyboardButton(
                     text="📕 Скачать PDF",
                     callback_data="export:single_pdf",

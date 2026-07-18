@@ -2,8 +2,15 @@ import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, FSInputFile
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from app.bot.keyboards.main_menu import (
     export_menu,
@@ -20,8 +27,9 @@ from app.repositories.report_repo import ReportRepository
 from app.repositories.shift_repo import ShiftRepository
 from app.repositories.student_repo import StudentRepository
 from app.repositories.user_repo import UserRepository
-from app.services.pptx_service import PptxService
+from app.services.docx_service import DocxService
 from app.services.zip_service import ZipService
+
 
 logger = logging.getLogger(__name__)
 router = Router(name="teacher_export")
@@ -73,12 +81,33 @@ async def _replace_with_bottom_menu(cb: CallbackQuery, text: str, reply_markup=N
     return await cb.message.answer(text, reply_markup=reply_markup)
 
 
-async def _send_export_bottom_menu(cb: CallbackQuery, user: User) -> None:
-    """После файлов/служебных сообщений возвращает меню экспорта вниз чата."""
+async def _send_export_bottom_menu(
+    cb: CallbackQuery, user: User, state: FSMContext | None = None
+) -> None:
+    """После файлов/служебных сообщений возвращает меню экспорта вниз чата.
+
+    Для педагога, если в сессии есть выбранный департамент, добавляем прямую
+    кнопку «👦 К списку детей» — чтобы после скачивания не оставаться в тупике
+    из двух кнопок «PPTX/PDF», а сразу вернуться к детям для правки/выбора
+    следующего ребёнка (частая жалоба: «негде редактировать, некуда вернуться»).
+    """
+    markup = _export_mode_menu_for_user(user)
+    if state is not None and user.role != UserRole.admin:
+        data = await state.get_data()
+        if data.get("department_id"):
+            rows = list(markup.inline_keyboard)
+            rows.append([
+                InlineKeyboardButton(
+                    text="👦 К списку детей",
+                    callback_data="teacher:child_list",
+                )
+            ])
+            markup = InlineKeyboardMarkup(inline_keyboard=rows)
     await cb.message.answer(
         "📥 <b>Скачать ещё отчёты?</b>",
-        reply_markup=_export_mode_menu_for_user(user),
+        reply_markup=markup,
     )
+
 
 
 async def _resolve_shift_context(
@@ -514,20 +543,20 @@ async def _export_single(
     )
 
     try:
-        pptx_svc = PptxService()
+        docx_svc = DocxService()
         if as_pdf:
 
-            file_path = await pptx_svc.generate_pdf_async(
+            file_path = await docx_svc.generate_pdf_async(
                 report=report, student=student, shift=shift, teacher=teacher,
                 shift_context=shift_context,
             )
         else:
-            file_path = await pptx_svc.generate_async(
+            file_path = await docx_svc.generate_async(
                 report=report, student=student, shift=shift, teacher=teacher,
                 shift_context=shift_context,
             )
 
-            # Обновляем путь в БД (только для основного PPTX)
+            # Обновляем путь в БД (только для основного DOCX)
             await report_repo.finalize(report.id, docx_path=str(file_path))
 
         doc_file = FSInputFile(str(file_path), filename=file_path.name)
@@ -535,12 +564,14 @@ async def _export_single(
             doc_file,
             caption=f"📄 Отчёт: <b>{student.full_name}</b>\n{shift.name}",
         )
-        await _send_export_bottom_menu(cb, user)
+        await _send_export_bottom_menu(cb, user, state)
+
 
         logger.info(
-            f"Sent {'PDF' if as_pdf else 'PPTX'} for student={student.full_name} "
+            f"Sent {'PDF' if as_pdf else 'DOCX'} for student={student.full_name} "
             f"to teacher={user.id}"
         )
+
 
     except Exception as e:
         logger.error(f"Export error: {e}", exc_info=True)
@@ -677,7 +708,7 @@ async def _export_zip(
         return
 
     try:
-        pptx_svc = PptxService()
+        docx_svc = DocxService()
         zip_svc = ZipService()
 
         zip_buffer, archive_name, added_count, failed_count = await zip_svc.create_zip_async(
@@ -685,7 +716,8 @@ async def _export_zip(
             report_items=report_items,
             shift=shift,
             teacher=teacher,
-            report_service=pptx_svc,
+            report_service=docx_svc,
+
             as_pdf=as_pdf,
             archive_label=(
                 f"{shift.name}_{department.name}"
@@ -716,14 +748,16 @@ async def _export_zip(
         await cb.message.answer_document(
             zip_file,
             caption=(
-                f"{caption_title} ({'PDF' if as_pdf else 'PPTX'})\n"
+                f"{caption_title} ({'PDF' if as_pdf else 'DOCX'})\n"
+
                 f"{shift.name}\n"
                 f"{caption_scope}\n"
                 f"Отчётов: {added_count}"
                 f"{failed_caption}"
             ),
         )
-        await _send_export_bottom_menu(cb, user)
+        await _send_export_bottom_menu(cb, user, state)
+
         logger.info(
             f"Sent ZIP {archive_name}: {added_count} reports "
             f"to teacher={user.id}"

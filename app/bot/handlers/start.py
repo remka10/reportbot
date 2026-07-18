@@ -1,8 +1,9 @@
 import logging
 
 from aiogram import Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
+
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +31,23 @@ async def cmd_start(
         await _start_teacher(message, user, session)
     else:
         await _start_admin(message, user)
+
+
+# Аварийный выход в главное меню. Дублирует поведение /start, но существует как
+# отдельная понятная команда: если педагог «застрял» (залипшая кнопка, потерян
+# контекст, busy-lock) — /menu всегда чистит FSM (в т.ч. llm_busy) и возвращает
+# в главное меню, не заставляя искать старое сообщение с /start вверху чата.
+@router.message(Command("menu"))
+async def cmd_menu(
+    message: Message, state: FSMContext, user: User, session: AsyncSession
+) -> None:
+    await state.clear()
+
+    if user.role == UserRole.teacher:
+        await _start_teacher(message, user, session)
+    else:
+        await _start_admin(message, user)
+
 
 
 async def _start_teacher(

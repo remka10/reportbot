@@ -23,6 +23,8 @@ from app.repositories.department_repo import DepartmentRepository
 from app.repositories.answer_repo import AnswerRepository
 from app.repositories.report_repo import ReportRepository
 from app.repositories.student_repo import StudentRepository
+from app.repositories.question_repo import QuestionRepository
+
 from app.services.stt_service import STTService
 from app.services.llm_service import LLMService
 
@@ -505,14 +507,18 @@ async def _build_children_view(
 ):
     """Готовит данные для списка детей департамента.
 
-    Возвращает (students, progress_map, finalized_ids, total, back_departments_cb),
-    где back_departments_cb — callback кнопки «Назад к департаментам» или None,
-    если возвращаться некуда (единственный департамент у педагога).
+    Возвращает (students, progress_map, finalized_ids, total, back_departments_cb,
+    total_questions), где back_departments_cb — callback кнопки «Назад к
+    департаментам» или None, если возвращаться некуда (единственный департамент
+    у педагога); total_questions — число активных вопросов (для счётчика N/M).
     """
     student_repo = StudentRepository(session)
     answer_repo = AnswerRepository(session)
     report_repo = ReportRepository(session)
     dep_repo = DepartmentRepository(session)
+    q_repo = QuestionRepository(session)
+    total_questions = len(list(await q_repo.get_all_active()))
+
 
     department = await dep_repo.get_by_id(department_id)
     shift_id = department.shift_id if department else None
@@ -532,7 +538,8 @@ async def _build_children_view(
         back_departments_cb = "teacher:shifts" if len(all_departments) > 1 else None
 
     if not students:
-        return None, None, None, None, back_departments_cb
+        return None, None, None, None, back_departments_cb, total_questions
+
 
 
     student_ids = [s.id for s in students]
@@ -547,7 +554,11 @@ async def _build_children_view(
         back_departments_cb=back_departments_cb,
     )
     await state.set_state(ChildSelectStates.choosing_child)
-    return students, progress_map, finalized_ids, len(students), back_departments_cb
+    return (
+        students, progress_map, finalized_ids, len(students),
+        back_departments_cb, total_questions,
+    )
+
 
 
 async def _show_children(
@@ -558,7 +569,7 @@ async def _show_children(
     department_id: int,
     page: int = 0,
 ) -> None:
-    students, progress_map, finalized_ids, total, back_departments_cb = (
+    students, progress_map, finalized_ids, total, back_departments_cb, total_questions = (
         await _build_children_view(user, session, state, department_id)
     )
     if students is None:
@@ -571,14 +582,16 @@ async def _show_children(
     await callback.message.edit_text(
         f"👦 <b>Список детей</b>\n"
         f"Готово: {len(finalized_ids)}/{total} отчётов\n\n"
-        "Выберите ребёнка (в скобках — заполнено вопросов из 13):",
+        f"Выберите ребёнка (в скобках — заполнено вопросов из {total_questions}):",
 
         reply_markup=children_keyboard(
             students, progress_map, finalized_ids, page=page,
+            total_questions=total_questions,
             show_back_to_departments=bool(back_departments_cb),
             back_to_departments_cb=back_departments_cb or "teacher:shifts",
         ),
     )
+
 
 
 async def _show_children_message(
@@ -589,7 +602,7 @@ async def _show_children_message(
     department_id: int,
     page: int = 0,
 ) -> None:
-    students, progress_map, finalized_ids, total, back_departments_cb = (
+    students, progress_map, finalized_ids, total, back_departments_cb, total_questions = (
         await _build_children_view(user, session, state, department_id)
     )
     if students is None:
@@ -604,14 +617,16 @@ async def _show_children_message(
         f"✅ Контекст сохранён!\n\n"
         f"👦 <b>Список детей</b>\n"
         f"Готово: {len(finalized_ids)}/{total} отчётов\n\n"
-        "Выберите ребёнка (в скобках — заполнено вопросов из 13):",
+        f"Выберите ребёнка (в скобках — заполнено вопросов из {total_questions}):",
 
         reply_markup=children_keyboard(
             students, progress_map, finalized_ids, page=page,
+            total_questions=total_questions,
             show_back_to_departments=bool(back_departments_cb),
             back_to_departments_cb=back_departments_cb or "teacher:shifts",
         ),
     )
+
 
 
 

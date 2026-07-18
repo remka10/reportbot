@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import time
 
 from aiogram import F, Router
+
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -28,6 +30,7 @@ from app.repositories.department_repo import DepartmentRepository
 
 from app.services.llm_service import LLMService
 from app.services.stt_service import STTService
+from app.services.docx_service import TEACHER_MARKER, TUTOR_MARKER
 
 logger = logging.getLogger(__name__)
 router = Router(name="teacher_generation")
@@ -35,7 +38,9 @@ router = Router(name="teacher_generation")
 TG_MAX_TEXT = 4000
 
 # Разделитель между блоком ответов на вопросы (1..13) и итоговым отчётом.
+# Оставлен для обратной совместимости со старыми (одноблочными) отчётами.
 REPORT_MARKER = "=== ИТОГОВЫЙ ОТЧЁТ ==="
+
 
 
 
@@ -155,12 +160,32 @@ async def _send_parts(
 # LLM параллельно → двойные ответы, гонки за одно сообщение, «зависания». Флаг в
 # FSM (llm_busy) не даёт запустить вторую операцию, пока не завершилась первая.
 
+# Через сколько секунд «зависший» busy-lock считается устаревшим и снимается
+# автоматически. Нужно на случай, когда операция оборвалась так, что finally не
+# успел отработать (жёсткий рестарт контейнера в момент запроса к LLM, флаг уже
+# уехал в Redis) — иначе кнопки навсегда отвечали бы «⏳ Уже генерирую…», и
+# спасал бы только /start. TTL с запасом больше самого долгого запроса к LLM.
+_BUSY_TTL_SEC = 180
+
+
 async def _is_busy(state: FSMContext) -> bool:
-    return bool((await state.get_data()).get("llm_busy", False))
+    data = await state.get_data()
+    if not data.get("llm_busy", False):
+        return False
+    started_at = data.get("llm_busy_at", 0) or 0
+    # Флаг «протух» — операция явно не завершилась штатно, снимаем блокировку.
+    if (time.time() - started_at) > _BUSY_TTL_SEC:
+        await _set_busy(state, False)
+        return False
+    return True
 
 
 async def _set_busy(state: FSMContext, value: bool) -> None:
-    await state.update_data(llm_busy=value)
+    if value:
+        await state.update_data(llm_busy=True, llm_busy_at=time.time())
+    else:
+        await state.update_data(llm_busy=False, llm_busy_at=0)
+
 
 
 # ---------------------------------------------------------------------------
@@ -290,16 +315,18 @@ async def cb_generate_report(
         await cb.answer("Ошибка: не выбран ребёнок или смена.", show_alert=True)
         return
 
-    # Мгновенно снимаем «часики» с кнопки — ещё до тяжёлой работы (LLM 10–90 сек).
-    # Без этого Telegram держит кнопку «нажатой», и педагогу кажется, что всё зависло.
-    await cb.answer()
-
-    # Busy-lock: если генерация/правка уже идёт — не запускаем вторую (двойной тап
-    # по «Сгенерировать» иначе слал два параллельных запроса к LLM с гонками).
+    # Busy-lock ПЕРЕД cb.answer(): callback можно «ответить» только один раз, а
+    # для занятого состояния нужен именно всплывающий alert. Если сначала снять
+    # «часики» пустым answer(), второй answer(show_alert) уже не покажется.
     if await _is_busy(state):
         await cb.answer("⏳ Уже генерирую, подождите…", show_alert=True)
         return
+
+    # Мгновенно снимаем «часики» с кнопки — ещё до тяжёлой работы (LLM 10–90 сек).
+    # Без этого Telegram держит кнопку «нажатой», и педагогу кажется, что всё зависло.
+    await cb.answer()
     await _set_busy(state, True)
+
 
     await state.set_state(GenerationStates.generating)
     status_msg = await safe_edit_text(
@@ -829,15 +856,21 @@ async def _apply_revision(
 
 
 
-        # Гарантия сохранности ответов: если у отчёта был блок ответов 1..13,
-        # но модель его не вернула (потеряла/обрезала), пересобираем полный текст
-        # из сохранённого блока ответов + свежего итогового отчёта.
-        new_answers, new_final = _split_report(revised_text)
-        if prev_answers and not new_answers:
-            final_part = new_final or revised_text.strip()
-            revised_text = f"{prev_answers}\n\n{REPORT_MARKER}\n\n{final_part}"
+        # Гарантия целостности структуры: отчёт состоит из двух блоков с
+        # маркерами. Если модель вернула текст вообще без маркеров (потеряла
+        # структуру), считаем его преподским блоком и дописываем пустой
+        # вожатский, чтобы документ собрался корректно.
+        if (
+            TEACHER_MARKER not in revised_text
+            and TUTOR_MARKER not in revised_text
+            and revised_text.strip()
+        ):
+            revised_text = (
+                f"{TEACHER_MARKER}\n{revised_text.strip()}\n\n{TUTOR_MARKER}\n—"
+            )
 
         await report_repo.update_text(report_id, revised_text)
+
         await report_repo.add_revision_message(
             report_id=report_id,
             role=DialogRole.assistant,
