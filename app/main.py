@@ -72,11 +72,8 @@ def _make_bot() -> Bot:
     # (api.telegram.org -> 2001:67c:...) → попытка IPv6 виснет и даёт
     # TelegramNetworkError: Request timeout error. AF_INET убирает этот класс сбоев.
     session._connector_init["family"] = socket.AF_INET
-    # ttl_dns_cache=300 — кэшируем DNS-ответ на 5 минут, но НЕ навсегда: если
-    # набор IP Telegram поменяется/один узел «отвалится», мы перезапросим DNS и
-    # получим живой адрес. Это и есть failover, которого не было при хардкоде IP.
-    session._connector_init["ttl_dns_cache"] = 300
     return Bot(
+
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         session=session,
