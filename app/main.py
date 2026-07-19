@@ -4,8 +4,8 @@ import logging
 import socket
 from contextlib import asynccontextmanager
 
-import aiohttp
 from aiogram import Bot, Dispatcher
+
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
@@ -45,39 +45,33 @@ _polling_task: asyncio.Task | None = None
 # апдейтов нет (server-side long poll). 30с — стандартное значение aiogram.
 POLLING_TIMEOUT = 30
 
-# Раздельные таймауты вместо одного «общего». Раньше был единый timeout=60 на
-# ВЕСЬ запрос — но long-polling getUpdates легально живёт до POLLING_TIMEOUT
-# секунд без данных, и общий таймаут в 60с не отличает «ждём апдейты» от
-# «соединение зависло». Гранулярные таймауты бьют точнее:
-#   - sock_connect: сколько ждём установки TCP+TLS (быстрый фейл, если маршрут/IP
-#     до Telegram недоступен — вместо зависания на минуту);
-#   - sock_read: пауза между байтами ответа (ловит «мёртвое» соединение);
-#   - total на getUpdates = POLLING_TIMEOUT + запас на сеть/чтение.
-CONNECT_TIMEOUT = 15
-SOCK_READ_TIMEOUT = 40
-TOTAL_TIMEOUT = POLLING_TIMEOUT + 30  # запас поверх серверного long-poll
+# Таймаут ОДНОГО обычного запроса к Bot API (не getUpdates). Для getUpdates
+# aiogram сам прибавляет polling_timeout: request_timeout = session.timeout +
+# POLLING_TIMEOUT. ВАЖНО: aiogram 3.7.0 хранит session.timeout числом и делает
+# int(session.timeout + polling_timeout) — поэтому сюда нельзя передавать
+# aiohttp.ClientTimeout (будет TypeError на сложении с int), только число.
+# 30с достаточно: если соединение до Telegram живое, ответ приходит быстро; если
+# «мёртвое» — запрос оборвётся по таймауту и polling переоткроет его заново,
+# вместо того чтобы висеть минуту (прежний timeout=60 давал «раз через раз»).
+REQUEST_TIMEOUT = 30
 
 
 def _make_bot() -> Bot:
-    # ClientTimeout с раздельными фазами — см. комментарий выше.
-    timeout = aiohttp.ClientTimeout(
-        total=TOTAL_TIMEOUT,
-        connect=CONNECT_TIMEOUT,
-        sock_connect=CONNECT_TIMEOUT,
-        sock_read=SOCK_READ_TIMEOUT,
-    )
-    session = AiohttpSession(timeout=timeout)
+    # Числовой таймаут (в секундах). Раздельные фазы (sock_read/sock_connect)
+    # через AiohttpSession в этой версии aiogram задать нельзя — session.timeout
+    # используется как одно число, см. комментарий к REQUEST_TIMEOUT.
+    session = AiohttpSession(timeout=REQUEST_TIMEOUT)
     # Форсим IPv4 для исходящих запросов к api.telegram.org.
     # У контейнера нет IPv6-маршрута, но Docker-DNS периодически отдаёт AAAA-запись
     # (api.telegram.org -> 2001:67c:...) → попытка IPv6 виснет и даёт
     # TelegramNetworkError: Request timeout error. AF_INET убирает этот класс сбоев.
     session._connector_init["family"] = socket.AF_INET
     return Bot(
-
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         session=session,
     )
+
 
 
 
