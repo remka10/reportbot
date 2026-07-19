@@ -179,7 +179,7 @@ certbot/ (SSL) — никогда. alembic/versions/ — только новые
 Домен: teachergen.ru (бот @teachergenbot). Health: `GET https://teachergen.ru/health` → `{"status":"ok","bot":"..."}`. Сервер: root@185.207.64.66, проект в /home/reportbot. Контейнеры: bot(uvicorn:8000), db(postgres:15), nginx(80/443), certbot.
 
 ### docker-compose.yml (сервисы)
-bot: build ., env_file .env, command `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1`, depends_on db(healthy), extra_hosts api.telegram.org→149.154.167.220 (обход блокировок), dns 8.8.8.8/8.8.4.4, volumes .:/app + reportsdata:/app/reports.
+bot: build ., env_file .env, command `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1`, depends_on db(healthy)+redis(healthy), dns 8.8.8.8/8.8.4.4, volumes .:/app + reportsdata:/app/reports. ВАЖНО: extra_hosts для api.telegram.org НЕ используем — хардкод одного IP (149.154.167.220) убирал failover и давал таймауты «раз через раз»; полагаемся на DNS (8.8.8.8) + ttl_dns_cache=300 в сессии бота. Исходящие форсятся в IPv4 (socket.AF_INET). Таймауты getUpdates раздельные: connect/sock_connect=15с, sock_read=40с, total=60с, polling_timeout=30с (см. app/main.py::_make_bot / _run_polling).
 db: postgres:15-alpine, POSTGRES_DB=reportbot, healthcheck pg_isready.
 nginx: nginx:alpine, порты 80/443, конфиги ./nginx/conf.d, certbot conf/www.
 certbot: certbot/certbot.

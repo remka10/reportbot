@@ -17,11 +17,15 @@ services:
     volumes:
       - .:/app
       - reports_data:/app/reports
-    extra_hosts:
-      - "api.telegram.org:149.154.167.220"
+    # ВАЖНО: НЕ хардкодим api.telegram.org через extra_hosts.
+    # Раньше здесь был "api.telegram.org:149.154.167.220" — это загоняло весь
+    # трафик в один-единственный дата-центр Telegram без failover, и когда до
+    # него был плохой маршрут, запрос висел до таймаута ("раз через раз").
+    # DNS ниже отдаёт актуальный набор адресов с автоматическим переключением.
     dns:
       - 8.8.8.8
       - 8.8.4.4
+
 
   db:
     image: postgres:15-alpine

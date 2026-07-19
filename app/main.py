@@ -4,10 +4,12 @@ import logging
 import socket
 from contextlib import asynccontextmanager
 
+import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
+
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from fastapi import FastAPI
@@ -39,20 +41,47 @@ ALLOWED_UPDATES = [
 ]
 _polling_task: asyncio.Task | None = None
 
+# Long-polling: сколько секунд Telegram держит getUpdates открытым, если новых
+# апдейтов нет (server-side long poll). 30с — стандартное значение aiogram.
+POLLING_TIMEOUT = 30
+
+# Раздельные таймауты вместо одного «общего». Раньше был единый timeout=60 на
+# ВЕСЬ запрос — но long-polling getUpdates легально живёт до POLLING_TIMEOUT
+# секунд без данных, и общий таймаут в 60с не отличает «ждём апдейты» от
+# «соединение зависло». Гранулярные таймауты бьют точнее:
+#   - sock_connect: сколько ждём установки TCP+TLS (быстрый фейл, если маршрут/IP
+#     до Telegram недоступен — вместо зависания на минуту);
+#   - sock_read: пауза между байтами ответа (ловит «мёртвое» соединение);
+#   - total на getUpdates = POLLING_TIMEOUT + запас на сеть/чтение.
+CONNECT_TIMEOUT = 15
+SOCK_READ_TIMEOUT = 40
+TOTAL_TIMEOUT = POLLING_TIMEOUT + 30  # запас поверх серверного long-poll
 
 
 def _make_bot() -> Bot:
-    session = AiohttpSession(timeout=60)
+    # ClientTimeout с раздельными фазами — см. комментарий выше.
+    timeout = aiohttp.ClientTimeout(
+        total=TOTAL_TIMEOUT,
+        connect=CONNECT_TIMEOUT,
+        sock_connect=CONNECT_TIMEOUT,
+        sock_read=SOCK_READ_TIMEOUT,
+    )
+    session = AiohttpSession(timeout=timeout)
     # Форсим IPv4 для исходящих запросов к api.telegram.org.
     # У контейнера нет IPv6-маршрута, но Docker-DNS периодически отдаёт AAAA-запись
     # (api.telegram.org -> 2001:67c:...) → попытка IPv6 виснет и даёт
     # TelegramNetworkError: Request timeout error. AF_INET убирает этот класс сбоев.
     session._connector_init["family"] = socket.AF_INET
+    # ttl_dns_cache=300 — кэшируем DNS-ответ на 5 минут, но НЕ навсегда: если
+    # набор IP Telegram поменяется/один узел «отвалится», мы перезапросим DNS и
+    # получим живой адрес. Это и есть failover, которого не было при хардкоде IP.
+    session._connector_init["ttl_dns_cache"] = 300
     return Bot(
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         session=session,
     )
+
 
 
 def _make_storage():
@@ -97,7 +126,9 @@ async def _run_polling() -> None:
                 bot,
                 allowed_updates=ALLOWED_UPDATES,
                 handle_signals=False,
+                polling_timeout=POLLING_TIMEOUT,
             )
+
         except asyncio.CancelledError:
             logger.info("Polling cancelled")
             raise

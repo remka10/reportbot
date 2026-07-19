@@ -95,7 +95,12 @@ class STTService:
                     voice.file_id, request_timeout=TG_REQUEST_TIMEOUT
                 )
                 audio_bytes = io.BytesIO()
-                await bot.download_file(file.file_path, destination=audio_bytes)
+                await bot.download_file(
+                    file.file_path,
+                    destination=audio_bytes,
+                    timeout=int(TG_REQUEST_TIMEOUT),
+                )
+
                 audio_bytes.seek(0)
                 return audio_bytes.read()
             except TelegramRetryAfter as e:
