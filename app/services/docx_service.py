@@ -37,11 +37,14 @@ from datetime import date
 from pathlib import Path
 
 from docx import Document
-from docx.enum.table import WD_ALIGN_VERTICAL
-
+from docx.enum.table import WD_ALIGN_VERTICAL, WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls, qn
 from docx.shared import Emu, Inches, Pt, RGBColor as DocxRGBColor
+
+
+
 
 
 
@@ -552,13 +555,16 @@ class DocxService:
             chunks = [text]
         for chunk in chunks:
             p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             pf = p.paragraph_format
             pf.space_before = Pt(2)
             pf.space_after = Pt(6)
             pf.left_indent = side_indent
             pf.right_indent = side_indent
+            # Красная строка: каждый абзац начинается с отступа первой строки.
+            pf.first_line_indent = Inches(0.5)
             lines = chunk.split("\n")
+
             for i, line in enumerate(lines):
                 run = p.add_run(line)
                 self._apply_font(run, SIZE_BODY, False, DARK_HEX)
@@ -621,16 +627,18 @@ class DocxService:
         value_w = content_width - label_w - sep_w
         col_widths = (label_w, sep_w, value_w)
 
-        # Высота строки разделителя (высота PNG при отрисовке на ширину sep_w).
-        sep_has = IMG_PROFILE_V_SEP.exists()
-        if not sep_has:
-            logger.warning("Asset missing: %s", IMG_PROFILE_V_SEP)
+        # Фиксированная высота каждой строки — чтобы точно рассчитать высоту
+        # ОДНОЙ вертикальной линии-разделителя на весь профиль.
+        row_h_pt = 24
+        for row in table.rows:
+            row.height = Pt(row_h_pt)
+            row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
 
+        # Метки (колонка 0) и значения (колонка 2).
         for r_idx, (label, value, color_hex) in enumerate(rows):
             lc = table.cell(r_idx, 0)
-            sc = table.cell(r_idx, 1)
             vc = table.cell(r_idx, 2)
-            for cell, w in zip((lc, sc, vc), col_widths):
+            for cell, w in ((lc, label_w), (vc, value_w)):
                 cell.width = w
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
 
@@ -639,33 +647,96 @@ class DocxService:
             lrun = lp.add_run(label)
             self._apply_font(lrun, SIZE_PROFILE_LABEL, False, GREY_HEX)
 
-            # Средняя колонка: вертикальная линия-разделитель.
-            sp = sc.paragraphs[0]
-            sp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            sp.paragraph_format.space_before = Pt(0)
-            sp.paragraph_format.space_after = Pt(0)
-            if sep_has:
-                srun = sp.add_run()
-                # Разделитель тянем по высоте строки; ширину не задаём, чтобы
-                # линия оставалась тонкой (высота ≈ высота строки профиля).
-                srun.add_picture(str(IMG_PROFILE_V_SEP), height=Pt(22))
-
             vp = vc.paragraphs[0]
             vp.alignment = WD_ALIGN_PARAGRAPH.LEFT
             vrun = vp.add_run(value)
             self._apply_font(vrun, SIZE_PROFILE, True, color_hex)
 
+        # Средняя колонка: объединяем все ячейки в ОДНУ и вставляем ОДНУ
+        # вертикальную линию-разделитель на всю высоту профиля.
+        merged = table.cell(0, 1)
+        for r_idx in range(1, len(rows)):
+            merged = merged.merge(table.cell(r_idx, 1))
+        merged.width = sep_w
+        merged.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        sp = merged.paragraphs[0]
+        sp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        sp.paragraph_format.space_before = Pt(0)
+        sp.paragraph_format.space_after = Pt(0)
+        if IMG_PROFILE_V_SEP.exists():
+            srun = sp.add_run()
+            # Высота линии = суммарная высота строк профиля (одна картинка на всю
+            # высоту). Ширину не задаём — сохраняем пропорции тонкой линии.
+            srun.add_picture(str(IMG_PROFILE_V_SEP), height=Pt(row_h_pt * len(rows)))
+        else:
+            logger.warning("Asset missing: %s", IMG_PROFILE_V_SEP)
+
+
     def _add_bottom_logo(self, doc, page_width) -> None:
-        """Нижнее лого — во всю ширину страницы, без отступов, в конце тела
-        документа (на последней странице). НЕ колонтитул."""
-        self._add_fullwidth_image(
-            doc, IMG_LOGO_BOTTOM, page_width, space_before=6, space_after=0
+        """Нижнее лого — во всю ширину страницы, ПРИЖАТО к нижнему краю
+        последней страницы (не сразу после текста). НЕ колонтитул.
+
+        Реализовано плавающим (floating) изображением, привязанным по вертикали
+        к низу СТРАНИЦЫ (relativeFrom="page", align="bottom") и по центру по
+        горизонтали. Такой объект «садится» в самый низ той страницы, где стоит
+        его абзац-якорь (последний в документе), независимо от количества текста.
+        """
+        if not IMG_LOGO_BOTTOM.exists():
+            logger.warning("Asset missing: %s", IMG_LOGO_BOTTOM)
+            return
+
+        from lxml import etree
+
+        width_emu = int(page_width)
+        height_emu = _rendered_height_emu(IMG_LOGO_BOTTOM, width_emu)
+
+        # Абзац-якорь: к нему привязан плавающий объект. Сам абзац пустой.
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(0)
+        p.paragraph_format.left_indent = Emu(0)
+        p.paragraph_format.right_indent = Emu(0)
+        run = p.add_run()
+        run.add_picture(str(IMG_LOGO_BOTTOM), width=page_width)
+
+        # Достаём inline-рисунок и превращаем его в плавающий anchor.
+        drawing = run._element.find(qn("w:drawing"))
+        inline = drawing.find(qn("wp:inline"))
+        graphic = inline.find(qn("a:graphic"))
+        docpr = inline.find(qn("wp:docPr"))
+        doc_id = docpr.get("id") if docpr is not None else "999"
+        doc_name = docpr.get("name") if docpr is not None else "logo_bottom"
+        graphic_xml = etree.tostring(graphic).decode()
+
+        anchor_xml = (
+            f'<wp:anchor {nsdecls("wp", "a", "r", "pic")} '
+            'behindDoc="0" distT="0" distB="0" distL="0" distR="0" '
+            'simplePos="0" locked="0" layoutInCell="1" allowOverlap="1" '
+            'relativeHeight="0">'
+            '<wp:simplePos x="0" y="0"/>'
+            '<wp:positionH relativeFrom="page"><wp:align>center</wp:align></wp:positionH>'
+            '<wp:positionV relativeFrom="page"><wp:align>bottom</wp:align></wp:positionV>'
+            f'<wp:extent cx="{width_emu}" cy="{height_emu}"/>'
+            '<wp:effectExtent l="0" t="0" r="0" b="0"/>'
+            '<wp:wrapNone/>'
+            f'<wp:docPr id="{doc_id}" name="{doc_name}"/>'
+            '<wp:cNvGraphicFramePr/>'
+            f'{graphic_xml}'
+            '</wp:anchor>'
         )
+        anchor = parse_xml(anchor_xml)
+        drawing.replace(inline, anchor)
 
 
+
+
+    def _add_page_break(self, doc) -> None:
+        """Явный разрыв страницы: следующий контент — с новой страницы."""
+        doc.add_page_break()
 
     # ── основной метод генерации ──────────────────────────────────────────────
     def generate(
+
         self,
         report,
         student,
@@ -719,18 +790,20 @@ class DocxService:
             side_indent=side_indent,
         )
 
-        # Блок 1. Легенда смены
-
+        # Блок 1. Легенда смены — СТРОГО на первой странице.
         self._add_fullwidth_image(doc, IMG_LEGEND_BLOCK, page_width)
         self._add_body(doc, legend_text, side_indent)
 
-        # Блок 2. Преподский
+        # Блок 2. Преподский — начинается с НОВОЙ (второй) страницы.
+        self._add_page_break(doc)
         self._add_fullwidth_image(doc, IMG_TEACHERS_BLOCK, page_width)
         self._add_body(doc, teacher_block, side_indent)
 
-        # Блок 3. Вожатский
+        # Блок 3. Вожатский — начинается с НОВОЙ (третьей) страницы.
+        self._add_page_break(doc)
         self._add_fullwidth_image(doc, IMG_TUTORS_BLOCK, page_width)
         self._add_body(doc, tutor_block, side_indent)
+
 
         # Лого снизу — во всю ширину, без отступов, в конце тела документа
         # (на последней странице). НЕ колонтитул.
