@@ -29,8 +29,9 @@ from app.repositories.student_repo import StudentRepository
 from app.repositories.department_repo import DepartmentRepository
 
 from app.services.llm_service import LLMService
-from app.services.stt_service import STTService
+from app.services.stt_service import STTService, VoiceDownloadError
 from app.services.docx_service import TEACHER_MARKER, TUTOR_MARKER
+
 
 logger = logging.getLogger(__name__)
 router = Router(name="teacher_generation")
@@ -738,19 +739,53 @@ async def revision_text(
 async def revision_voice(
     message: Message, state: FSMContext, user: User, session: AsyncSession
 ) -> None:
-    status_msg = await message.answer("🎤 Распознаю голосовое...")
+    # ВАЖНО: все Telegram-вызовы идут через safe_* (ретраи на сетевые сбои и
+    # никогда не роняют хендлер). На этом сервере связь с api.telegram.org
+    # нестабильна (см. memory-bank §17); «сырые» message.answer/edit_text здесь
+    # периодически падали с TelegramNetworkError, исключение улетало в
+    # DbSessionMiddleware и превращалось в ложное «connection к Telegram
+    # прервался». Обёртки убирают этот класс ложных ошибок.
+    status_msg = await safe_answer(message, "🎤 Распознаю голосовое...")
     try:
         stt = STTService()
         request = await stt.transcribe_voice(message.voice, message.bot)
-        await status_msg.delete()
+        if status_msg is not None:
+            try:
+                await status_msg.delete()
+            except Exception:
+                logger.debug("status_msg.delete failed", exc_info=True)
         if not request or len(request.strip()) < 3:
-            await message.answer("⚠️ Не удалось распознать. Напишите правку текстом.")
+            await safe_answer(message, "⚠️ Не удалось распознать. Напишите правку текстом.")
             return
-        await message.answer(f"Распознано: <i>{_split_text(request)[0]}</i>")
+        await safe_answer(message, f"Распознано: <i>{_split_text(request)[0]}</i>")
         await _apply_revision(message, state, user, session, request.strip())
+    except VoiceDownloadError as e:
+        # Не смогли скачать голосовое из Telegram (сеть/таймаут) — это НЕ ошибка
+        # распознавания и НЕ «баг». Даём понятную инструкцию, а не вводящее в
+        # заблуждение «connection прервался».
+        logger.warning(f"Revision voice download error: {e}")
+        if status_msg is not None:
+            await safe_edit_text(
+                status_msg,
+                "⚠️ Не удалось загрузить голосовое из Telegram (временный сетевой сбой).\n"
+                "Отправьте его ещё раз или напишите правку текстом.",
+            )
+        else:
+            await safe_answer(
+                message,
+                "⚠️ Не удалось загрузить голосовое из Telegram (временный сетевой сбой).\n"
+                "Отправьте его ещё раз или напишите правку текстом.",
+            )
     except Exception as e:
         logger.error(f"Revision voice error: {e}", exc_info=True)
-        await status_msg.edit_text("⚠️ Ошибка распознавания. Напишите правку текстом.")
+        if status_msg is not None:
+            await safe_edit_text(
+                status_msg,
+                "⚠️ Ошибка распознавания. Напишите правку текстом.",
+            )
+        else:
+            await safe_answer(message, "⚠️ Ошибка распознавания. Напишите правку текстом.")
+
 
 
 # ---------------------------------------------------------------------------
@@ -812,18 +847,21 @@ async def _apply_revision(
     student_name = data.get("student_name", "—")
 
     if not report_id:
-        await message.answer("⚠️ Ошибка: отчёт не найден.")
+        await safe_answer(message, "⚠️ Ошибка: отчёт не найден.")
         return
 
     # Busy-lock: правка уже идёт → не запускаем вторую (иначе двойная отправка
     # текста подряд запускала бы два параллельных запроса к LLM с гонками).
     if await _is_busy(state):
-        await message.answer("⏳ Уже применяю предыдущую правку, подождите…")
+        await safe_answer(message, "⏳ Уже применяю предыдущую правку, подождите…")
         return
     await _set_busy(state, True)
 
-    status_msg = await message.answer(f"⏳ Применяю правки для {student_name}...")
+    # safe_answer: сетевой сбой доставки статуса не должен ронять хендлер и
+    # улетать в middleware как ложное «connection к Telegram прервался».
+    status_msg = await safe_answer(message, f"⏳ Применяю правки для {student_name}...")
     report_repo = ReportRepository(session)
+
 
     try:
 
