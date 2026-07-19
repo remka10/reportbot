@@ -572,12 +572,18 @@ class DocxService:
                     run.add_break()
 
     def _add_fullwidth_image(self, doc, path: Path, page_width,
-                             space_before: int = 6, space_after: int = 2) -> None:
+                             space_before: int = 6, space_after: int = 2,
+                             keep_with_next: bool = False) -> None:
         """Вставляет изображение во ВСЮ ширину страницы (края в край).
 
         Ширина = полная ширина страницы (поля секции обнулены), высота
         подбирается автоматически с сохранением пропорций — перспектива не
         ломается, т.к. задаём только width.
+
+        keep_with_next=True «сцепляет» картинку-заголовок блока со следующим
+        абзацем: если перед ней много текста и заголовок не помещается внизу
+        страницы, он вместе с началом текста переносится на новую страницу
+        (картинка не «прилипает» к нижнему краю и не обрезается).
         """
         if not path.exists():
             logger.warning("Asset missing: %s", path)
@@ -589,8 +595,12 @@ class DocxService:
         # Абзац-контейнер картинки тоже без отступов, иначе появится сдвиг вправо.
         p.paragraph_format.left_indent = Emu(0)
         p.paragraph_format.right_indent = Emu(0)
+        if keep_with_next:
+            p.paragraph_format.keep_with_next = True
+            p.paragraph_format.keep_together = True
         run = p.add_run()
         run.add_picture(str(path), width=page_width)
+
 
     def _add_profile(self, doc, shift_name: str, shift_dates: str,
                      dep_name: str, dep_color_hex: str, student_name: str,
@@ -649,8 +659,12 @@ class DocxService:
 
             vp = vc.paragraphs[0]
             vp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            # Небольшой левый отступ, чтобы значение НЕ «наезжало» на вертикальную
+            # линию-разделитель.
+            vp.paragraph_format.left_indent = Inches(0.18)
             vrun = vp.add_run(value)
             self._apply_font(vrun, SIZE_PROFILE, True, color_hex)
+
 
         # Средняя колонка: объединяем все ячейки в ОДНУ и вставляем ОДНУ
         # вертикальную линию-разделитель на всю высоту профиля.
@@ -799,10 +813,16 @@ class DocxService:
         self._add_fullwidth_image(doc, IMG_TEACHERS_BLOCK, page_width)
         self._add_body(doc, teacher_block, side_indent)
 
-        # Блок 3. Вожатский — начинается с НОВОЙ (третьей) страницы.
-        self._add_page_break(doc)
-        self._add_fullwidth_image(doc, IMG_TUTORS_BLOCK, page_width)
+        # Блок 3. Вожатский — идёт СРАЗУ после текста преподского блока
+        # (без разрыва страницы). keep_with_next: если преподский текст длинный
+        # и картинка-заголовок вожатского блока не помещается внизу страницы,
+        # она НЕ обрезается краем, а целиком переносится на новую страницу.
+        self._add_fullwidth_image(
+            doc, IMG_TUTORS_BLOCK, page_width, keep_with_next=True
+        )
         self._add_body(doc, tutor_block, side_indent)
+
+
 
 
         # Лого снизу — во всю ширину, без отступов, в конце тела документа
