@@ -659,15 +659,16 @@ class DocxService:
 
             vp = vc.paragraphs[0]
             vp.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            # Небольшой левый отступ, чтобы значение НЕ «наезжало» на вертикальную
-            # линию-разделитель.
-            vp.paragraph_format.left_indent = Inches(0.18)
             vrun = vp.add_run(value)
+
             self._apply_font(vrun, SIZE_PROFILE, True, color_hex)
 
 
-        # Средняя колонка: объединяем все ячейки в ОДНУ и вставляем ОДНУ
-        # вертикальную линию-разделитель на всю высоту профиля.
+
+        # Средняя колонка: объединяем все ячейки в ОДНУ и кладём туда ОДНУ
+        # вертикальную линию-разделитель на всю высоту профиля — как ПЛАВАЮЩИЙ
+        # объект «ПЕРЕД текстом» (in front of text). Линия лежит ПОВЕРХ всего,
+        # поэтому текст значений её не «подтёсывает» и не наезжает на неё.
         merged = table.cell(0, 1)
         for r_idx in range(1, len(rows)):
             merged = merged.merge(table.cell(r_idx, 1))
@@ -679,11 +680,14 @@ class DocxService:
         sp.paragraph_format.space_after = Pt(0)
         if IMG_PROFILE_V_SEP.exists():
             srun = sp.add_run()
-            # Высота линии = суммарная высота строк профиля (одна картинка на всю
-            # высоту). Ширину не задаём — сохраняем пропорции тонкой линии.
+            # Высота линии = суммарная высота строк профиля. Ширину не задаём —
+            # сохраняем пропорции тонкой линии.
             srun.add_picture(str(IMG_PROFILE_V_SEP), height=Pt(row_h_pt * len(rows)))
+            # Переводим линию в режим «перед текстом» (лежит поверх содержимого).
+            self._float_in_front_of_text(srun)
         else:
             logger.warning("Asset missing: %s", IMG_PROFILE_V_SEP)
+
 
 
     def _add_bottom_logo(self, doc, page_width) -> None:
@@ -747,6 +751,53 @@ class DocxService:
     def _add_page_break(self, doc) -> None:
         """Явный разрыв страницы: следующий контент — с новой страницы."""
         doc.add_page_break()
+
+    def _float_in_front_of_text(self, run) -> None:
+        """Превращает инлайновую картинку в плавающий объект «ПЕРЕД текстом».
+
+        Аналог опции Word «Обтекание текстом → Перед текстом» (In Front of Text):
+        картинка лежит ПОВЕРХ содержимого (behindDoc="0", <wp:wrapNone/>), поэтому
+        текст рядом её не «подтёсывает» и не наезжает. Позиция берётся из текущего
+        места вставки (по горизонтали — от колонки, по вертикали — от абзаца).
+        """
+        from lxml import etree
+
+        drawing = run._element.find(qn("w:drawing"))
+        if drawing is None:
+            return
+        inline = drawing.find(qn("wp:inline"))
+        if inline is None:
+            return
+        extent = inline.find(qn("wp:extent"))
+        cx = extent.get("cx") if extent is not None else "0"
+        cy = extent.get("cy") if extent is not None else "0"
+        graphic = inline.find(qn("a:graphic"))
+        docpr = inline.find(qn("wp:docPr"))
+        doc_id = docpr.get("id") if docpr is not None else "998"
+        doc_name = docpr.get("name") if docpr is not None else "v_sep"
+        graphic_xml = etree.tostring(graphic).decode()
+
+        anchor_xml = (
+            f'<wp:anchor {nsdecls("wp", "a", "r", "pic")} '
+            'behindDoc="0" distT="0" distB="0" distL="0" distR="0" '
+            'simplePos="0" locked="0" layoutInCell="1" allowOverlap="1" '
+            'relativeHeight="251658240">'
+            '<wp:simplePos x="0" y="0"/>'
+            '<wp:positionH relativeFrom="column">'
+            '<wp:posOffset>0</wp:posOffset></wp:positionH>'
+            '<wp:positionV relativeFrom="paragraph">'
+            '<wp:posOffset>0</wp:posOffset></wp:positionV>'
+            f'<wp:extent cx="{cx}" cy="{cy}"/>'
+            '<wp:effectExtent l="0" t="0" r="0" b="0"/>'
+            '<wp:wrapNone/>'
+            f'<wp:docPr id="{doc_id}" name="{doc_name}"/>'
+            '<wp:cNvGraphicFramePr/>'
+            f'{graphic_xml}'
+            '</wp:anchor>'
+        )
+        anchor = parse_xml(anchor_xml)
+        drawing.replace(inline, anchor)
+
 
     # ── основной метод генерации ──────────────────────────────────────────────
     def generate(
