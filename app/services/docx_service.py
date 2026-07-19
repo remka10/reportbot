@@ -33,6 +33,7 @@ import re
 import shutil
 import subprocess
 import zipfile
+
 from datetime import date
 from pathlib import Path
 
@@ -659,9 +660,13 @@ class DocxService:
 
             vp = vc.paragraphs[0]
             vp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            # Отступ значения от вертикальной линии-разделителя. Линия теперь
+            # плавающая (перед текстом), поэтому paragraph-отступ работает
+            # корректно: текст отходит правее, а линия остаётся на месте.
+            vp.paragraph_format.left_indent = Inches(0.22)
             vrun = vp.add_run(value)
-
             self._apply_font(vrun, SIZE_PROFILE, True, color_hex)
+
 
 
 
